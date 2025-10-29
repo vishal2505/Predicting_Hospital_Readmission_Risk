@@ -209,3 +209,11 @@ __marimo__/
 datamart/
 data/
 *.csv
+.prompt/
+.terraform/
+.terraform.lock.hcl
+.venv/
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+.DS_Store
