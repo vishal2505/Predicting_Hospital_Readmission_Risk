@@ -12,7 +12,7 @@ echo "Step 1: Getting EC2 instance details..."
 INSTANCE_DATA=$(aws ec2 describe-instances \
     --region ap-southeast-1 \
     --filters "Name=tag:Name,Values=diab-readmit-demo-airflow" \
-    --query 'Reservations[1].Instances[0]' \
+    --query 'Reservations[0].Instances[0]' \
     --output json)
 
 INSTANCE_ID=$(echo "$INSTANCE_DATA" | jq -r '.InstanceId')

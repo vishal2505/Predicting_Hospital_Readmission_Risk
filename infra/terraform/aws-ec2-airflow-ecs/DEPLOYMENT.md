@@ -26,7 +26,7 @@ This guide covers end-to-end deployment of the Airflow orchestration layer on EC
    - `diab-readmit-123456-datamart` (for bronze/silver/gold outputs)
    - `diab-readmit-123456-model-registry` (for future training artifacts)
 
-## Step 1: Deploy Infrastructure
+## Step 1: Deploy Infrastructure (Automated - One Command!)
 
 From the project root:
 
@@ -37,40 +37,24 @@ terraform apply -auto-approve \
   -var "datamart_base_uri=s3a://diab-readmit-123456-datamart/"
 ```
 
-Terraform will create:
-- EC2 instance (t3.small) with public IP, SSM Agent, Docker, Airflow services
-- ECR repository for the pipeline image
-- ECS cluster and Fargate task definition
-- Security groups (open 22 and 8080 to 0.0.0.0/0 for demo; restrict via `-var "allowed_cidr=YOUR_IP/32"` for production)
-- IAM roles and policies
-- CloudWatch Logs group
+**What Terraform Does Automatically:**
+- ✅ Creates EC2 instance (t3.small) with public IP, SSM Agent
+- ✅ Installs Docker and starts Airflow services (init, webserver, scheduler)
+- ✅ Creates ECR repository
+- ✅ **Builds Docker image locally and pushes to ECR** (automated!)
+- ✅ Creates ECS cluster and Fargate task definition
+- ✅ Sets up Security groups (ports 22 and 8080)
+- ✅ Configures IAM roles and policies
+- ✅ Creates CloudWatch Logs group
 
-Outputs include:
+**Outputs:**
 - `airflow_url` - Airflow UI endpoint
-- `ecr_repository_url` - ECR repo to push your image
+- `ecr_repository_url` - ECR repo URL (image already pushed!)
 - `ecs_cluster_name`, `ecs_task_definition` - used by the DAG
 
-## Step 2: Build and Push Pipeline Image to ECR
+**Note:** The Docker image build/push happens automatically during `terraform apply`. You don't need to build it manually!
 
-From the project root:
-
-```bash
-# Get ECR URL from Terraform output
-ECR_URL=$(cd infra/terraform/aws-ec2-airflow-ecs && terraform output -raw ecr_repository_url)
-REGION=ap-southeast-1
-
-# Log in to ECR
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_URL"
-
-# Build your image
-docker build -t diab-readmit-pipeline:latest .
-
-# Tag and push
-docker tag diab-readmit-pipeline:latest "$ECR_URL":latest
-docker push "$ECR_URL":latest
-```
-
-## Step 3: Access Airflow UI
+## Step 2: Access Airflow UI
 
 Open the `airflow_url` from Terraform outputs in your browser:
 
@@ -87,7 +71,7 @@ Example: `http://13.22.106.25:8080`
 
 (Created by `airflow-init` service on first boot.)
 
-## Step 4: Trigger the DAG
+## Step 3: Trigger the DAG
 
 1. In the Airflow UI, find the DAG: `diab_medallion_ecs`
 2. Enable it (toggle on)
@@ -97,7 +81,7 @@ Example: `http://13.22.106.25:8080`
    - ECS tasks visible in AWS Console → ECS → Clusters → Tasks
    - Logs in CloudWatch Logs: `/ecs/diab-readmit-demo`
 
-## Step 5: Verify Outputs in S3
+## Step 4: Verify Outputs in S3
 
 After the DAG succeeds, check your S3 bucket:
 
@@ -115,6 +99,26 @@ silver/diabetes/1999-01-01/
 gold/label_store/
 gold/feature_store/
 ```
+
+## Updating Your Pipeline Code
+
+The Docker image build is automated, but you need to trigger a rebuild when you change code:
+
+**When you update Python files (`main.py`, `requirements.txt`, `Dockerfile`):**
+
+```bash
+cd infra/terraform/aws-ec2-airflow-ecs
+
+# Terraform detects changes via file hashes and rebuilds automatically
+terraform apply -auto-approve -var "datamart_base_uri=s3a://diab-readmit-123456-datamart/"
+```
+
+Terraform tracks changes to:
+- `Dockerfile` 
+- `requirements.txt`
+- `main.py`
+
+If any of these change, the Docker image will be rebuilt and pushed to ECR automatically!
 
 ## Cost Management
 

@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Minimal bootstrap for EC2 (Amazon Linux 2023) to run Airflow via Docker Compose
+# Complete bootstrap for EC2 (Amazon Linux 2023) to run Airflow via Docker Compose
+# This script handles everything: package installation, Docker setup, repo cloning, and Airflow startup
 
-echo "[1/4] Installing packages (docker, git, curl)" >&2
-sudo dnf update -y
-sudo dnf install -y docker git curl
+echo "[1/5] Installing system packages (git, amazon-ssm-agent, ec2-instance-connect)" >&2
+sudo dnf install -y git amazon-ssm-agent ec2-instance-connect
+sudo systemctl enable amazon-ssm-agent && sudo systemctl start amazon-ssm-agent
+sudo systemctl enable sshd && sudo systemctl start sshd
+
+echo "[2/5] Installing and starting Docker" >&2
+sudo dnf install -y docker
 sudo systemctl enable docker
 sudo systemctl start docker
 
@@ -28,21 +33,21 @@ else
   COMPOSE_CMD="docker compose"
 fi
 
-echo "[2/4] Cloning repo if missing"
+echo "[3/5] Cloning repo if missing"
 if [ ! -d /opt/airflow/repo/.git ]; then
   sudo mkdir -p /opt/airflow
   cd /opt/airflow
   sudo rm -rf /opt/airflow/repo
-  sudo git clone -b feature/airflow_aws_pipeline https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git repo
+  sudo git clone -b feature/airflow_aws_pipeline https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git /opt/airflow/repo
 fi
 
-echo "[3/4] Starting Airflow services (init, webserver, scheduler)"
+echo "[4/5] Starting Airflow services (init, webserver, scheduler)"
 cd /opt/airflow/repo
 
 sudo $COMPOSE_CMD -f airflow-docker-compose.yaml up -d airflow-init
 sudo $COMPOSE_CMD -f airflow-docker-compose.yaml up -d airflow-webserver airflow-scheduler
 
-echo "[4/4] Checking container status and logs"
+echo "[5/5] Checking container status and logs"
 sudo $COMPOSE_CMD -f airflow-docker-compose.yaml ps
 CID=$(sudo docker ps --filter name=airflow --format '{{.ID}}' | head -n1 || true)
 if [ -n "${CID:-}" ]; then

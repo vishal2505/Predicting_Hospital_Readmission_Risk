@@ -138,16 +138,11 @@ resource "aws_instance" "airflow" {
     #!/bin/bash
     set -euxo pipefail
     
-    # Install base packages
-    dnf update -y
-    dnf install -y docker git curl amazon-ssm-agent ec2-instance-connect
-    systemctl enable docker && systemctl start docker
-    systemctl enable amazon-ssm-agent && systemctl start amazon-ssm-agent
-    systemctl enable sshd && systemctl start sshd
+    # Install git to clone repo (needed for bootstrap)
+    dnf install -y git
 
-    mkdir -p /opt/airflow
-    
     # Clone repo to get setup script and env template
+    mkdir -p /opt/airflow
     git clone -b feature/airflow_aws_pipeline https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git /opt/airflow/repo
     
     # Populate airflow.env from template with Terraform values
@@ -162,7 +157,7 @@ resource "aws_instance" "airflow" {
         -e 's|__END_DATE__|${var.end_date}|g' \
         /opt/airflow/repo/ops/airflow/airflow.env.template > /opt/airflow/airflow.env
     
-    # Run setup script to start Airflow services
+    # Run setup script (handles all package installation, Docker setup, and Airflow startup)
     chmod +x /opt/airflow/repo/ops/airflow/setup_airflow_ec2.sh
     /opt/airflow/repo/ops/airflow/setup_airflow_ec2.sh
   EOF
@@ -173,6 +168,40 @@ resource "aws_ecr_repository" "repo" {
   name                 = var.ecr_repo_name
   image_tag_mutability = "MUTABLE"
   image_scanning_configuration { scan_on_push = true }
+}
+
+# Build and push Docker image to ECR
+resource "null_resource" "docker_image" {
+  depends_on = [aws_ecr_repository.repo]
+
+  triggers = {
+    # Rebuild if any Python files, Dockerfile, or requirements change
+    dockerfile_hash = filemd5("${path.module}/../../Dockerfile")
+    requirements_hash = filemd5("${path.module}/../../requirements.txt")
+    main_py_hash = filemd5("${path.module}/../../main.py")
+    ecr_repo_url = aws_ecr_repository.repo.repository_url
+  }
+
+  provisioner "local-exec" {
+    working_dir = "${path.module}/../.."
+    command     = <<-EOT
+      echo "Building and pushing Docker image to ECR..."
+      
+      # Login to ECR
+      aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${aws_ecr_repository.repo.repository_url}
+      
+      # Build the image
+      docker build -t ${var.ecr_repo_name}:latest .
+      
+      # Tag the image
+      docker tag ${var.ecr_repo_name}:latest ${aws_ecr_repository.repo.repository_url}:latest
+      
+      # Push to ECR
+      docker push ${aws_ecr_repository.repo.repository_url}:latest
+      
+      echo "Docker image pushed successfully!"
+    EOT
+  }
 }
 
 # ECS Cluster
@@ -245,6 +274,8 @@ resource "aws_iam_role_policy" "ecs_task_inline" {
 
 # ECS Task Definition
 resource "aws_ecs_task_definition" "pipeline" {
+  depends_on = [null_resource.docker_image]  # Wait for Docker image to be pushed
+  
   family                   = "${local.name_prefix}-pipeline"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
