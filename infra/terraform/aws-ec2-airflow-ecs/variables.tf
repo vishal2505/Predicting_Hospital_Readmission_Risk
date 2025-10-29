@@ -57,3 +57,9 @@ variable "end_date" {
   type        = string
   default     = "2008-12-31"
 }
+
+variable "project_root" {
+  description = "Absolute path to project root directory (where Dockerfile, main.py are located)"
+  type        = string
+  default     = ""  # Will be auto-detected using path.cwd if not provided
+}

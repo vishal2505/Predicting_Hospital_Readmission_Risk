@@ -12,7 +12,7 @@ x-airflow-common: &airflow-common
     # Optionally install AWS provider at startup; if flaky, remove and install inside container
     _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow-providers-amazon
   volumes:
-    - ./airflow/dags:/opt/airflow/dags
+    - /opt/airflow/repo/airflow/dags:/opt/airflow/dags
     - airflow_home:/opt/airflow
 
 services:

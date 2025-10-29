@@ -27,6 +27,8 @@ data "aws_subnets" "default" {
 
 locals {
   name_prefix = var.project_name
+  # Auto-detect project root: if not provided, assume terraform is in infra/terraform/aws-ec2-airflow-ecs
+  project_root = var.project_root != "" ? var.project_root : abspath("${path.module}/../../..")
 }
 
 # Security Group for Airflow EC2
@@ -176,14 +178,14 @@ resource "null_resource" "docker_image" {
 
   triggers = {
     # Rebuild if any Python files, Dockerfile, or requirements change
-    dockerfile_hash = filemd5("${path.module}/../../Dockerfile")
-    requirements_hash = filemd5("${path.module}/../../requirements.txt")
-    main_py_hash = filemd5("${path.module}/../../main.py")
+    dockerfile_hash = filemd5("${local.project_root}/Dockerfile")
+    requirements_hash = filemd5("${local.project_root}/requirements.txt")
+    main_py_hash = filemd5("${local.project_root}/main.py")
     ecr_repo_url = aws_ecr_repository.repo.repository_url
   }
 
   provisioner "local-exec" {
-    working_dir = "${path.module}/../.."
+    working_dir = local.project_root
     command     = <<-EOT
       echo "Building and pushing Docker image to ECR..."
       
