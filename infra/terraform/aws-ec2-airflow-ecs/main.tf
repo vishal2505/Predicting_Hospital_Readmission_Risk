@@ -148,7 +148,7 @@ resource "aws_instance" "airflow" {
     mkdir -p /opt/airflow
     
     # Clone repo to get setup script and env template
-    git clone https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git /opt/airflow/repo
+    git clone -b feature/airflow_aws_pipeline https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git /opt/airflow/repo
     
     # Populate airflow.env from template with Terraform values
     sed -e 's|__AWS_REGION__|${var.aws_region}|g' \

@@ -33,7 +33,7 @@ if [ ! -d /opt/airflow/repo/.git ]; then
   sudo mkdir -p /opt/airflow
   cd /opt/airflow
   sudo rm -rf /opt/airflow/repo
-  sudo git clone https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git repo
+  sudo git clone -b feature/airflow_aws_pipeline https://github.com/vishal2505/Predicting_Hospital_Readmission_Risk.git repo
 fi
 
 echo "[3/4] Starting Airflow services (init, webserver, scheduler)"
