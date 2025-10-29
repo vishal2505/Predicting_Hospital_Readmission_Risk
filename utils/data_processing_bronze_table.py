@@ -16,25 +16,6 @@ from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 from pyspark.sql.functions import col, month, year
 
 
-def process_bronze_table_loan(snapshot_date_str, bronze_loan_directory, spark):
-    # prepare arguments
-    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
-    
-    # connect to source back end - IRL connect to back end source system
-    csv_file_path = "data/lms_loan_daily.csv"
-
-    # load data - IRL ingest from back end source system
-    df = spark.read.csv(csv_file_path, header=True, inferSchema=True).filter(col('snapshot_date') == snapshot_date)
-    print(snapshot_date_str + 'row count:', df.count())
-
-    # save bronze table to datamart - IRL connect to database to write
-    partition_name = "bronze_loan_daily_" + snapshot_date_str.replace('-','_') + '.csv'
-    filepath = bronze_loan_directory + partition_name
-    df.toPandas().to_csv(filepath, index=False)
-    print('saved to:', filepath)
-
-    return df
-
 def process_bronze_table_diabetes(snapshot_date_str, bronze_loan_directory, spark):
     # prepare arguments
     snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
@@ -46,12 +27,12 @@ def process_bronze_table_diabetes(snapshot_date_str, bronze_loan_directory, spar
 
     # load data - IRL ingest from back end source system
     df = spark.read.csv(csv_file_path, header=True, inferSchema=True).filter((year(col('snapshot_date')) == target_year) & (month(col('snapshot_date')) == target_month))
-    print(snapshot_date_str + 'row count:', df.count())
+    print(snapshot_date_str + ' row count:', df.count())
 
-    # save bronze table to datamart - IRL connect to database to write
+    # save bronze table to datamart as a single-part CSV (directory with one part file)
     partition_name = f"bronze_diabetes_monthly_{target_year}_{target_month:02d}.csv"
     filepath = bronze_loan_directory + partition_name
-    df.toPandas().to_csv(filepath, index=False)
+    df.coalesce(1).write.mode("overwrite").option("header", True).csv(filepath)
     print('saved to:', filepath)
 
     return df
