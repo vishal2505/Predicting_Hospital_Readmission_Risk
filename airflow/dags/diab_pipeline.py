@@ -47,13 +47,12 @@ with DAG(
         cluster=ECS_CLUSTER,
         task_definition=ECS_TASK_DEF,
         launch_type="FARGATE",
-        assign_public_ip=True,  # avoid NAT cost
         region_name=AWS_REGION,
         network_configuration={
             "awsvpcConfiguration": {
                 "subnets": ECS_SUBNETS,
                 "securityGroups": ECS_SECURITY_GROUPS,
-                "assignPublicIp": "ENABLED",
+                "assignPublicIp": "ENABLED",  # avoid NAT cost
             }
         },
         overrides={
@@ -84,7 +83,6 @@ with DAG(
         cluster=ECS_CLUSTER,
         task_definition=ECS_TASK_DEF,
         launch_type="FARGATE",
-        assign_public_ip=True,
         region_name=AWS_REGION,
         network_configuration={
             "awsvpcConfiguration": {
@@ -119,7 +117,6 @@ with DAG(
         cluster=ECS_CLUSTER,
         task_definition=ECS_TASK_DEF,
         launch_type="FARGATE",
-        assign_public_ip=True,
         region_name=AWS_REGION,
         network_configuration={
             "awsvpcConfiguration": {
