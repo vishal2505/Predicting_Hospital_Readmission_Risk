@@ -19,7 +19,7 @@ variable "allowed_cidr" {
 variable "ec2_instance_type" {
   description = "EC2 instance type for Airflow"
   type        = string
-  default     = "t3.small"
+  default     = "t3.medium"
 }
 
 variable "key_pair_name" {

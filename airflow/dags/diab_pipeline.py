@@ -11,7 +11,10 @@ AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 # These should be set via Airflow Variables or env on the EC2 instance
 # You can also hardcode for a quick demo and update later.
 ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "")
-ECS_TASK_DEF = os.environ.get("ECS_TASK_DEF", "")
+ECS_TASK_DEF_RAW = os.environ.get("ECS_TASK_DEF", "")
+# Strip revision number to always use latest active revision
+# e.g., "family:8" becomes "family" which ECS resolves to latest
+ECS_TASK_DEF = ECS_TASK_DEF_RAW.split(":")[0] if ":" in ECS_TASK_DEF_RAW else ECS_TASK_DEF_RAW
 ECS_SUBNETS = os.environ.get("ECS_SUBNETS", "").split(",") if os.environ.get("ECS_SUBNETS") else []
 ECS_SECURITY_GROUPS = os.environ.get("ECS_SECURITY_GROUPS", "").split(",") if os.environ.get("ECS_SECURITY_GROUPS") else []
 
