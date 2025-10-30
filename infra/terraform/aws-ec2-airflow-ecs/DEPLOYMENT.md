@@ -245,6 +245,29 @@ docker compose -f airflow-docker-compose.yaml up -d
 
 ## Cost Management
 
+**Quick Reference: What to Update When**
+
+| What Changed | What to Do | Script to Use |
+|-------------|------------|---------------|
+| Pipeline code (`main.py`, `utils/`, `Dockerfile`, `requirements.txt`) | Rebuild Docker image and push to ECR | `./ops/build_push_docker.sh` |
+| DAG code (`airflow/dags/`) | Pull code on EC2 and restart Airflow | `./ops/update_airflow_dags.sh` |
+| Terraform config (`main.tf`, `variables.tf`) | Run `terraform apply` | N/A |
+| Both pipeline + DAG | Do both steps above | Run both scripts |
+
+**Understanding the Two Deployment Paths:**
+
+1. **EC2 (Airflow Orchestration)**
+   - Runs: DAG files from Git
+   - Updates: `git pull` + restart Airflow containers
+   - Location: `/opt/airflow/repo/airflow/dags/`
+
+2. **ECS (Pipeline Execution)**
+   - Runs: Docker image from ECR
+   - Updates: Build new image + push to ECR
+   - Location: ECR repository `diab-readmit-pipeline`
+
+## Cost Management
+
 - **EC2 t3.small**: ~$15-$25/month if running 24/7; stop instance overnight to save ~50%
   - Stop: `aws ec2 stop-instances --instance-ids <instance-id>`
   - Start: `aws ec2 start-instances --instance-ids <instance-id>`
