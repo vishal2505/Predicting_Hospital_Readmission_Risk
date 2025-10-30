@@ -102,9 +102,9 @@ gold/feature_store/
 
 ## Updating Your Pipeline Code
 
-The Docker image build is automated, but you need to trigger a rebuild when you change code:
+### Option 1: Automated Build (Recommended)
 
-**When you update Python files (`main.py`, `requirements.txt`, `Dockerfile`):**
+The Docker image build is automated via Terraform. When you change code:
 
 ```bash
 cd infra/terraform/aws-ec2-airflow-ecs
@@ -113,12 +113,135 @@ cd infra/terraform/aws-ec2-airflow-ecs
 terraform apply -auto-approve -var "datamart_base_uri=s3a://diab-readmit-123456-datamart/"
 ```
 
-Terraform tracks changes to:
+**Terraform tracks changes to:**
 - `Dockerfile` 
 - `requirements.txt`
 - `main.py`
 
-If any of these change, the Docker image will be rebuilt and pushed to ECR automatically!
+If any of these files change, the Docker image will be rebuilt and pushed to ECR automatically!
+
+### Option 2: Manual Build and Push
+
+If you need to build and push the Docker image manually (for testing or quick iterations):
+
+**Step 1: Get ECR repository URL**
+```bash
+# From project root
+cd infra/terraform/aws-ec2-airflow-ecs
+ECR_REPO=$(terraform output -json | jq -r '.ecr_repository_url.value')
+echo "ECR Repository: $ECR_REPO"
+
+# Or directly from AWS
+ECR_REPO=$(aws ecr describe-repositories \
+  --repository-names diab-readmit-pipeline \
+  --region ap-southeast-1 \
+  --query 'repositories[0].repositoryUri' \
+  --output text)
+```
+
+**Step 2: Authenticate Docker to ECR**
+```bash
+aws ecr get-login-password --region ap-southeast-1 | \
+  docker login --username AWS --password-stdin $ECR_REPO
+```
+
+**Step 3: Build the Docker image**
+```bash
+# Navigate to project root (where Dockerfile is)
+cd ../../../
+
+# Build the image
+docker build -t diab-readmit-pipeline:latest .
+
+# Tag for ECR
+docker tag diab-readmit-pipeline:latest $ECR_REPO:latest
+
+# Optional: Add timestamp tag for versioning
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+docker tag diab-readmit-pipeline:latest $ECR_REPO:$TIMESTAMP
+```
+
+**Step 4: Push to ECR**
+```bash
+# Push latest tag
+docker push $ECR_REPO:latest
+
+# Push timestamp tag (optional)
+docker push $ECR_REPO:$TIMESTAMP
+```
+
+**Step 5: Update task definition (if needed)**
+```bash
+# Terraform will use the :latest tag by default
+# But you can force a new task definition revision:
+cd infra/terraform/aws-ec2-airflow-ecs
+terraform taint aws_ecs_task_definition.pipeline
+terraform apply -auto-approve -var "datamart_base_uri=s3a://diab-readmit-123456-datamart/"
+```
+
+**All-in-One Script:**
+```bash
+#!/bin/bash
+# Quick script to build and push Docker image manually
+
+set -e
+
+# Get ECR repo URL
+ECR_REPO=$(aws ecr describe-repositories \
+  --repository-names diab-readmit-pipeline \
+  --region ap-southeast-1 \
+  --query 'repositories[0].repositoryUri' \
+  --output text)
+
+echo "ECR Repository: $ECR_REPO"
+
+# Login to ECR
+echo "Authenticating to ECR..."
+aws ecr get-login-password --region ap-southeast-1 | \
+  docker login --username AWS --password-stdin $ECR_REPO
+
+# Build image
+echo "Building Docker image..."
+docker build -t diab-readmit-pipeline:latest .
+
+# Tag for ECR
+echo "Tagging image..."
+docker tag diab-readmit-pipeline:latest $ECR_REPO:latest
+
+# Push to ECR
+echo "Pushing to ECR..."
+docker push $ECR_REPO:latest
+
+echo "✅ Image pushed successfully: $ECR_REPO:latest"
+```
+
+Save this as `ops/build_push_docker.sh` and run:
+```bash
+chmod +x ops/build_push_docker.sh
+./ops/build_push_docker.sh
+```
+
+### Updating Airflow DAGs
+
+DAGs are pulled from Git on the EC2 instance. To update:
+
+```bash
+# SSH to EC2
+ssh ec2-user@<PUBLIC_IP>
+
+# Pull latest code
+cd /opt/airflow/repo
+git pull origin feature/airflow_aws_pipeline
+
+# Restart Airflow to reload DAGs
+docker compose -f airflow-docker-compose.yaml down
+docker compose -f airflow-docker-compose.yaml up -d
+```
+
+**Important:** 
+- **Pipeline code** (main.py, utils/) → Needs Docker rebuild and push to ECR
+- **DAG code** (airflow/dags/) → Needs git pull on EC2 and Airflow restart
+- **Both are separate!** DAG changes don't require Docker rebuild
 
 ## Cost Management
 
