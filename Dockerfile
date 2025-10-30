@@ -27,6 +27,12 @@ COPY requirements.txt ./
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
+COPY main.py ./
+COPY utils/ ./utils/
+COPY data/ ./data/
+COPY conf/ ./conf/
+
 # --- ADDITIONS FOR S3 CONNECTIVITY ---
 # Download the Hadoop-AWS and AWS SDK bundle JARs for S3a support.
 RUN wget -O /tmp/hadoop-aws-3.3.4.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
@@ -36,14 +42,6 @@ RUN wget -O /tmp/hadoop-aws-3.3.4.jar https://repo1.maven.org/maven2/org/apache/
     mv /tmp/aws-java-sdk-bundle-1.12.639.jar /opt/spark/jars-extra/
 # --- END ADDITIONS ---
 
-# Expose the default JupyterLab port
-EXPOSE 8888
-
-# Create a volume mount point for notebooks
-VOLUME /app
-
-# Enable JupyterLab via environment variable
-ENV JUPYTER_ENABLE_LAB=yes
-
-# Set up the command to run JupyterLab
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--notebook-dir=/app"]
+# Default command - runs the main pipeline script
+# Can be overridden in ECS task definition or docker run
+CMD ["python", "main.py"]
