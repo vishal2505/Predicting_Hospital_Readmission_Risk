@@ -6,6 +6,7 @@ set -euo pipefail
 
 echo "[1/5] Installing system packages (git, amazon-ssm-agent, ec2-instance-connect)" >&2
 sudo dnf install -y git amazon-ssm-agent ec2-instance-connect
+sudo dnf install -y https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin.rpm
 sudo systemctl enable amazon-ssm-agent && sudo systemctl start amazon-ssm-agent
 sudo systemctl enable sshd && sudo systemctl start sshd
 
