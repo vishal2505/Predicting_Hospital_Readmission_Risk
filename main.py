@@ -47,6 +47,10 @@ else:
 
 spark = builder.getOrCreate()
 
+# Disable profiling to avoid "profile file cannot be null" error
+spark.sparkContext.setLogLevel("WARN")
+spark.conf.set("spark.python.profile", "false")
+
 # Set log level to ERROR to hide warnings
 spark.sparkContext.setLogLevel("ERROR")
 
