@@ -17,7 +17,14 @@ import utils.data_processing_silver_table
 import utils.data_processing_gold_table
 
 # Initialize SparkSession with S3 support (uses env credentials if present)
-aws_region = os.environ.get("AWS_REGION", "us-east-1")
+aws_region = os.environ.get("AWS_REGION", "ap-southeast-1")
+
+
+provider_chain = ",".join([
+    "com.amazonaws.auth.ContainerCredentialsProvider",          # ECS / EKS / Fargate
+    "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",# if AWS_* are set
+    "org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider",  # EC2/ECS host role
+])
 
 builder = (
     pyspark.sql.SparkSession.builder
@@ -25,15 +32,7 @@ builder = (
     .master("local[*]")
     .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
     .config("spark.hadoop.fs.s3a.path.style.access", "true")
-    .config(
-        "spark.hadoop.fs.s3a.aws.credentials.provider",
-        ",".join([
-            "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
-            "com.amazonaws.auth.profile.ProfileCredentialsProvider",
-            "com.amazonaws.auth.InstanceProfileCredentialsProvider",
-            "com.amazonaws.auth.WebIdentityTokenCredentialsProvider",
-        ]),
-    )
+    .config("spark.hadoop.fs.s3a.aws.credentials.provider", provider_chain)
     .config("spark.hadoop.fs.s3a.endpoint", f"s3.{aws_region}.amazonaws.com")
 )
 
@@ -47,11 +46,7 @@ else:
 
 spark = builder.getOrCreate()
 
-# Disable profiling to avoid "profile file cannot be null" error
-spark.sparkContext.setLogLevel("WARN")
-spark.conf.set("spark.python.profile", "false")
-
-# Set log level to ERROR to hide warnings
+# Set log level to reduce noise
 spark.sparkContext.setLogLevel("ERROR")
 
 # set up config (overridable via env for orchestration)
