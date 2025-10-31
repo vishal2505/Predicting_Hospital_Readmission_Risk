@@ -53,7 +53,8 @@ If data processing and training are in the same DAG:
 
 **Model Training:**
 - Heavy compute requirements
-- May need 2-4 vCPUs / 8-16 GB memory
+- **2 vCPU / 4 GB** for hyperparameter tuning (implemented in our architecture)
+- May need 4+ vCPUs / 8-16 GB for larger datasets
 - Hyperparameter tuning can take hours
 - Cross-validation multiplies compute time
 
@@ -62,6 +63,11 @@ If data processing and training are in the same DAG:
 - Data processing wastes resources when provisioned for training
 - Cannot optimize task definitions separately
 - Higher AWS costs for every data processing run
+
+**Our Solution:**
+- ✅ **Separate task definitions:** `diab-readmit-demo-pipeline` (1vCPU/2GB) and `diab-readmit-demo-model-training` (2vCPU/4GB)
+- ✅ **Cost optimized:** Data processing uses cheaper resources
+- ✅ **Performance optimized:** Model training gets 2x more CPU for faster hyperparameter search
 
 ### 3. Failure Handling & Monitoring
 

@@ -16,8 +16,11 @@ from airflow.models.baseoperator import chain
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "")
-ECS_TASK_DEF_RAW = os.environ.get("ECS_TASK_DEF", "")
-ECS_TASK_DEF = ECS_TASK_DEF_RAW.split(":")[0] if ":" in ECS_TASK_DEF_RAW else ECS_TASK_DEF_RAW
+
+# Use dedicated model training task definition (higher resources: 2vCPU/4GB)
+ECS_MODEL_TRAINING_TASK_DEF_RAW = os.environ.get("ECS_MODEL_TRAINING_TASK_DEF", "")
+ECS_MODEL_TRAINING_TASK_DEF = ECS_MODEL_TRAINING_TASK_DEF_RAW.split(":")[0] if ":" in ECS_MODEL_TRAINING_TASK_DEF_RAW else ECS_MODEL_TRAINING_TASK_DEF_RAW
+
 ECS_SUBNETS = os.environ.get("ECS_SUBNETS", "").split(",") if os.environ.get("ECS_SUBNETS") else []
 ECS_SECURITY_GROUPS = os.environ.get("ECS_SECURITY_GROUPS", "").split(",") if os.environ.get("ECS_SECURITY_GROUPS") else []
 DATAMART_BASE_URI = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
@@ -264,11 +267,12 @@ with DAG(
     )
     
     # Model Training Tasks (ECS Fargate) - One per algorithm for parallel execution
+    # Uses dedicated model training task definition with 2vCPU/4GB (vs 1vCPU/2GB for data processing)
     train_logistic_regression = EcsRunTaskOperator(
         task_id="train_logistic_regression",
         aws_conn_id="aws_default",
         cluster=ECS_CLUSTER,
-        task_definition=ECS_TASK_DEF,
+        task_definition=ECS_MODEL_TRAINING_TASK_DEF,
         launch_type="FARGATE",
         region_name=AWS_REGION,
         network_configuration={
@@ -309,7 +313,7 @@ with DAG(
         task_id="train_random_forest",
         aws_conn_id="aws_default",
         cluster=ECS_CLUSTER,
-        task_definition=ECS_TASK_DEF,
+        task_definition=ECS_MODEL_TRAINING_TASK_DEF,
         launch_type="FARGATE",
         region_name=AWS_REGION,
         network_configuration={
@@ -351,7 +355,7 @@ with DAG(
         task_id="train_xgboost",
         aws_conn_id="aws_default",
         cluster=ECS_CLUSTER,
-        task_definition=ECS_TASK_DEF,
+        task_definition=ECS_MODEL_TRAINING_TASK_DEF,
         launch_type="FARGATE",
         region_name=AWS_REGION,
         network_configuration={

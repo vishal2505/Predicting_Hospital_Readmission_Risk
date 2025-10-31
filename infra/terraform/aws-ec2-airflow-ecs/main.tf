@@ -170,8 +170,9 @@ resource "aws_instance" "airflow" {
     sed -e 's|__AWS_REGION__|${var.aws_region}|g' \
         -e 's|__ECS_CLUSTER__|${aws_ecs_cluster.pipeline.name}|g' \
         -e 's|__ECS_TASK_DEF__|${aws_ecs_task_definition.pipeline.family}:${aws_ecs_task_definition.pipeline.revision}|g' \
+        -e 's|__ECS_MODEL_TRAINING_TASK_DEF__|${aws_ecs_task_definition.model_training.family}:${aws_ecs_task_definition.model_training.revision}|g' \
         -e 's|__ECS_SUBNETS__|${join(",", data.aws_subnets.default.ids)}|g' \
-        -e 's|__ECS_SECURITY_GROUPS__|${aws_security_group.airflow_sg.id}|g' \
+        -e 's|__ECS_SECURITY_GROUPS__|${aws_security_group.ecs_tasks_sg.id}|g' \
         -e 's|__DATAMART_BASE_URI__|${var.datamart_base_uri}|g' \
         -e 's|__ECS_CONTAINER_NAME__|${var.container_name}|g' \
         -e 's|__START_DATE__|${var.start_date}|g' \
@@ -281,17 +282,8 @@ resource "aws_iam_role_policy" "ecs_task_inline" {
     Statement = [
       {
         Effect = "Allow",
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket",
-          "s3:GetBucketLocation"
-        ],
-        Resource = [
-          "arn:aws:s3:::diab-readmit-*",
-          "arn:aws:s3:::diab-readmit-*/*"
-        ]
+        Action = ["s3:*"],
+        Resource = "*"
       },
       {
         Effect = "Allow",
@@ -302,15 +294,15 @@ resource "aws_iam_role_policy" "ecs_task_inline" {
   })
 }
 
-# ECS Task Definition
+# ECS Task Definition - Data Processing Pipeline
 resource "aws_ecs_task_definition" "pipeline" {
   depends_on = [null_resource.docker_image]  # Wait for Docker image to be pushed
   
   family                   = "${local.name_prefix}-pipeline"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = "1024"
-  memory                   = "2048"
+  cpu                      = "1024"   # 1 vCPU for data processing
+  memory                   = "2048"   # 2 GB for data processing
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task_role.arn
 
@@ -339,4 +331,44 @@ resource "aws_ecs_task_definition" "pipeline" {
       }
     }
   ])
+}
+
+# ECS Task Definition - Model Training (Higher Resources)
+resource "aws_ecs_task_definition" "model_training" {
+  depends_on = [null_resource.docker_image]  # Wait for Docker image to be pushed
+  
+  family                   = "${local.name_prefix}-model-training"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "2048"   # 2 vCPU for model training (ML workload)
+  memory                   = "4096"   # 4 GB for model training
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = var.container_name,
+      image     = "${aws_ecr_repository.repo.repository_url}:latest",
+      essential = true,
+      command   = ["python", "model_train.py"],
+      environment = [
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "DATAMART_BASE_URI", value = var.datamart_base_uri }
+      ],
+      logConfiguration = {
+        logDriver = "awslogs",
+        options   = {
+          awslogs-group         = aws_cloudwatch_log_group.model_training.name,
+          awslogs-region        = var.aws_region,
+          awslogs-stream-prefix = "ecs"
+        }
+      }
+    }
+  ])
+}
+
+# CloudWatch Log Group for Model Training
+resource "aws_cloudwatch_log_group" "model_training" {
+  name              = "/ecs/${local.name_prefix}-model-training"
+  retention_in_days = 7
 }

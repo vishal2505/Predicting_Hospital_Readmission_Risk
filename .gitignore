@@ -218,4 +218,4 @@ terraform.tfstate.backup
 terraform.tfstate.*.backup
 *.tfvars
 .DS_Store
-model_train_main2*
+model_train_main_*

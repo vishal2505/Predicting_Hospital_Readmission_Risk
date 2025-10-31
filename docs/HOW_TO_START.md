@@ -134,8 +134,11 @@ ec2_instance_type = "t3.medium"  # Minimum recommended for Airflow
 ec2_key_name      = "your-key-pair-name"  # Your existing EC2 key pair
 
 # ECS Configuration
-ecs_task_cpu    = "1024"  # 1 vCPU
-ecs_task_memory = "2048"  # 2 GB
+# Note: Two task definitions will be created:
+#   1. Data Processing: 1 vCPU / 2 GB (Bronze→Silver→Gold ETL)
+#   2. Model Training: 2 vCPU / 4 GB (ML training - 2x resources)
+ecs_task_cpu    = "1024"  # 1 vCPU for data processing
+ecs_task_memory = "2048"  # 2 GB for data processing
 
 # S3 Buckets
 datamart_bucket_suffix = "123456"  # Will create: diab-readmit-123456-datamart
@@ -169,10 +172,12 @@ Review the resources that will be created:
 - VPC, Subnets, Security Groups (if not provided)
 - EC2 instance for Airflow
 - ECS Cluster
-- ECS Task Definition
+- **2 ECS Task Definitions:**
+  - `diab-readmit-demo-pipeline` (1vCPU/2GB) - Data processing
+  - `diab-readmit-demo-model-training` (2vCPU/4GB) - Model training
 - IAM Roles and Policies
 - S3 Buckets (datamart and model registry)
-- CloudWatch Log Groups
+- CloudWatch Log Groups (separate for data processing and model training)
 
 ### Step 5: Apply Terraform Configuration
 
@@ -195,7 +200,8 @@ cat outputs.json | jq
 - `ec2_public_ip` - Airflow UI access
 - `ec2_instance_id` - For SSH access
 - `ecs_cluster_name` - ECS cluster name
-- `ecs_task_definition_arn` - Task definition ARN
+- `ecs_task_definition` - Data processing task definition (1vCPU/2GB)
+- `ecs_model_training_task_definition` - Model training task definition (2vCPU/4GB)
 - `datamart_bucket_name` - S3 datamart bucket
 - `model_registry_bucket_name` - S3 model registry bucket
 - `ecr_repository_url` - ECR repository for Docker images
@@ -206,13 +212,17 @@ Save these values - you'll need them later:
 # Extract key values
 export EC2_PUBLIC_IP=$(terraform output -raw ec2_public_ip)
 export ECS_CLUSTER=$(terraform output -raw ecs_cluster_name)
-export ECS_TASK_DEF=$(terraform output -raw ecs_task_definition_arn)
+export ECS_TASK_DEF=$(terraform output -raw ecs_task_definition)
+export ECS_MODEL_TRAINING_TASK_DEF=$(terraform output -raw ecs_model_training_task_definition)
 export DATAMART_BUCKET=$(terraform output -raw datamart_bucket_name)
 export MODEL_REGISTRY_BUCKET=$(terraform output -raw model_registry_bucket_name)
 export ECR_REPO=$(terraform output -raw ecr_repository_url)
 
 # Display values
 echo "EC2 IP: $EC2_PUBLIC_IP"
+echo "ECS Cluster: $ECS_CLUSTER"
+echo "Data Processing Task: $ECS_TASK_DEF"
+echo "Model Training Task: $ECS_MODEL_TRAINING_TASK_DEF"
 echo "ECS Cluster: $ECS_CLUSTER"
 echo "ECS Task: $ECS_TASK_DEF"
 echo "Datamart Bucket: $DATAMART_BUCKET"
@@ -391,7 +401,11 @@ AWS_DEFAULT_REGION=ap-southeast-1
 
 # ECS Configuration
 ECS_CLUSTER=diab-readmit-demo-cluster
-ECS_TASK_DEF=diab-readmit-demo-pipeline
+
+# Task Definitions (separate for data processing vs model training)
+ECS_TASK_DEF=diab-readmit-demo-pipeline                    # Data processing (1vCPU/2GB)
+ECS_MODEL_TRAINING_TASK_DEF=diab-readmit-demo-model-training  # Model training (2vCPU/4GB)
+
 ECS_CONTAINER_NAME=app
 ECS_SUBNETS=subnet-016ccc26ac506b800,subnet-0a8b7c9d0e1f2g3h4  # Replace with your subnets
 ECS_SECURITY_GROUPS=sg-0123456789abcdef0  # Replace with your security group
@@ -408,6 +422,11 @@ EOF
 ```
 
 **Update these values with your actual values from terraform outputs:**
+- `ECS_CLUSTER` - from terraform output `ecs_cluster_name`
+- `ECS_TASK_DEF` - from terraform output `ecs_task_definition` (for data processing DAG)
+- `ECS_MODEL_TRAINING_TASK_DEF` - from terraform output `ecs_model_training_task_definition` (for model training DAG)
+- `ECS_SUBNETS` - from terraform output `ecs_subnets`
+- `ECS_SECURITY_GROUPS` - from terraform output `ecs_security_groups`
 - `ECS_CLUSTER` - from terraform output `ecs_cluster_name`
 - `ECS_TASK_DEF` - from terraform output `ecs_task_definition_arn` (just the family name, not the full ARN)
 - `ECS_SUBNETS` - from terraform output `ecs_subnets`

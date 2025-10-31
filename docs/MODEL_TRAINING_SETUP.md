@@ -4,6 +4,8 @@
 
 The model training pipeline supports **parallel training of multiple algorithms** with temporal window validation and prerequisite checks. Each algorithm runs as a separate ECS task for independent execution, failure handling, and resource optimization.
 
+**Key Infrastructure:** Uses a **dedicated ECS task definition** with **2 vCPU / 4 GB** (double the resources of data processing) for faster model training.
+
 ## Architecture
 
 ```
@@ -19,10 +21,25 @@ DAG: diab_model_training
 │   └── Verifies >= 10 data partitions
 │
 └── Parallel Training (3 ECS Tasks)
-    ├── train_logistic_regression (2 hour timeout)
-    ├── train_random_forest (3 hour timeout)
-    └── train_xgboost (3 hour timeout)
+    ├── train_logistic_regression (2vCPU/4GB, 2hr timeout)
+    ├── train_random_forest (2vCPU/4GB, 3hr timeout)
+    └── train_xgboost (2vCPU/4GB, 3hr timeout)
 ```
+
+### ECS Task Definitions
+
+The pipeline uses **two separate task definitions** for optimal resource allocation:
+
+| Task Definition | CPU | Memory | Use Case | Tasks |
+|----------------|-----|--------|----------|-------|
+| **diab-readmit-demo-pipeline** | 1 vCPU | 2 GB | Data processing (Bronze→Silver→Gold) | ETL workloads |
+| **diab-readmit-demo-model-training** | 2 vCPU | 4 GB | Model training with hyperparameter tuning | ML workloads |
+
+**Benefits:**
+- 🚀 **2x faster training** with increased CPU
+- 💾 **Prevents OOM errors** with 4GB memory for large datasets
+- 💰 **Cost optimized** - data processing still uses cheaper 1vCPU tasks
+- 🔧 **Independent scaling** - adjust resources per workload type
 
 ### Key Design Decisions
 
@@ -33,6 +50,10 @@ DAG: diab_model_training
 **Single vs Multi-Algorithm Mode:**
 - **Single-Algorithm Mode:** Triggered by DAG tasks with `ALGORITHM` environment variable
 - **Multi-Algorithm Mode:** Local/manual execution trains all enabled algorithms
+
+**Separate Task Definitions:**
+- ✅ **Model Training (2vCPU/4GB):** Optimized for CPU-intensive ML workloads
+- ✅ **Data Processing (1vCPU/2GB):** Cost-effective for I/O-bound ETL tasks
 
 ## Temporal Window Configuration
 

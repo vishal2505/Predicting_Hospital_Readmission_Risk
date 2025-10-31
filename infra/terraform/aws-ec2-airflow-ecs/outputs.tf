@@ -19,8 +19,13 @@ output "ecs_cluster_name" {
 }
 
 output "ecs_task_definition" {
-  description = "ECS Task Definition family:revision"
+  description = "ECS Task Definition family:revision for data processing"
   value       = "${aws_ecs_task_definition.pipeline.family}:${aws_ecs_task_definition.pipeline.revision}"
+}
+
+output "ecs_model_training_task_definition" {
+  description = "ECS Task Definition family:revision for model training (higher resources)"
+  value       = "${aws_ecs_task_definition.model_training.family}:${aws_ecs_task_definition.model_training.revision}"
 }
 
 output "ecs_subnets" {

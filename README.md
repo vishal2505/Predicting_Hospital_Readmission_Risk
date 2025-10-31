@@ -201,7 +201,10 @@ http://<EC2_PUBLIC_IP>:8080
 
 **Airflow Environment** (`airflow/airflow.env`):
 - AWS region and credentials
-- ECS cluster and task definition
+- ECS cluster name
+- **Two ECS task definitions:**
+  - `ECS_TASK_DEF` - Data processing (1vCPU/2GB)
+  - `ECS_MODEL_TRAINING_TASK_DEF` - Model training (2vCPU/4GB)
 - S3 bucket paths
 
 ## 🐛 Troubleshooting
@@ -211,6 +214,7 @@ http://<EC2_PUBLIC_IP>:8080
 | Issue | Solution |
 |-------|----------|
 | ECS task fails with exit code 1 | Check CloudWatch logs, verify config in S3 |
+| Model training slow | Verify using model training task def (2vCPU/4GB) |
 | Airflow UI not accessible | Check EC2 security group allows port 8080 |
 | DAG not visible | Restart scheduler: `docker-compose restart airflow-scheduler` |
 | S3 Access Denied | Verify ECS task role has S3 permissions |
