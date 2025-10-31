@@ -25,6 +25,88 @@ from sklearn.metrics import (
 from sklearn.preprocessing import StandardScaler
 
 
+def load_preprocessed_data_from_s3():
+    """
+    Load preprocessed data from S3 gold/preprocessed/ folder
+    This avoids redundant preprocessing across parallel training tasks
+    """
+    print("\n" + "=" * 80)
+    print("Loading Preprocessed Data from S3")
+    print("=" * 80)
+    
+    # Get bucket from environment
+    datamart_uri = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
+    bucket = datamart_uri.replace("s3a://", "").replace("s3://", "").rstrip("/").split("/")[0]
+    
+    s3_client = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
+    
+    # Get the latest preprocessing run
+    latest_key = "gold/preprocessed/latest.txt"
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=latest_key)
+        prefix = response['Body'].read().decode('utf-8').strip()
+        print(f"✓ Found latest preprocessing: {prefix}")
+    except Exception as e:
+        raise FileNotFoundError(f"No preprocessed data found. Run preprocess_train_data.py first. Error: {e}")
+    
+    # Download metadata
+    metadata_key = f"{prefix}metadata.json"
+    metadata_path = "/tmp/preprocessing_metadata.json"
+    s3_client.download_file(bucket, metadata_key, metadata_path)
+    with open(metadata_path, 'r') as f:
+        metadata = json.load(f)
+    print(f"✓ Loaded metadata: {metadata['timestamp']}")
+    print(f"  Train shape: {metadata['train_shape']}")
+    print(f"  Test shape: {metadata['test_shape']}")
+    print(f"  OOT shape: {metadata['oot_shape']}")
+    
+    # Download train data
+    train_key = f"{prefix}train_processed.parquet"
+    train_path = "/tmp/train_processed.parquet"
+    s3_client.download_file(bucket, train_key, train_path)
+    train_df = pd.read_parquet(train_path)
+    print(f"✓ Loaded train data: {train_df.shape}")
+    
+    # Download test data
+    test_key = f"{prefix}test_processed.parquet"
+    test_path = "/tmp/test_processed.parquet"
+    s3_client.download_file(bucket, test_key, test_path)
+    test_df = pd.read_parquet(test_path)
+    print(f"✓ Loaded test data: {test_df.shape}")
+    
+    # Download OOT data
+    oot_key = f"{prefix}oot_processed.parquet"
+    oot_path = "/tmp/oot_processed.parquet"
+    s3_client.download_file(bucket, oot_key, oot_path)
+    oot_df = pd.read_parquet(oot_path)
+    print(f"✓ Loaded OOT data: {oot_df.shape}")
+    
+    # Download scaler
+    scaler_key = f"{prefix}scaler.pkl"
+    scaler_path = "/tmp/scaler.pkl"
+    s3_client.download_file(bucket, scaler_key, scaler_path)
+    with open(scaler_path, 'rb') as f:
+        scaler = pickle.load(f)
+    print(f"✓ Loaded scaler")
+    
+    # Separate features and labels
+    feature_cols = [c for c in train_df.columns if c != 'label']
+    
+    X_train = train_df[feature_cols].values
+    y_train = train_df['label']
+    X_test = test_df[feature_cols].values
+    y_test = test_df['label']
+    X_oot = oot_df[feature_cols].values
+    y_oot = oot_df['label']
+    
+    print(f"\n✓ Ready for training:")
+    print(f"  X_train: {X_train.shape}, Readmission rate: {y_train.mean():.3f}")
+    print(f"  X_test:  {X_test.shape}, Readmission rate: {y_test.mean():.3f}")
+    print(f"  X_oot:   {X_oot.shape}, Readmission rate: {y_oot.mean():.3f}")
+    
+    return X_train, y_train, X_test, y_test, X_oot, y_oot, feature_cols
+
+
 def load_config(config_path="conf/model_config.json"):
     """Load model configuration"""
     # Priority order:
@@ -410,7 +492,10 @@ def evaluate_model(model, X_test, y_test, X_oot, y_oot, model_name):
 
 
 def save_model_to_s3(model, model_name, model_metadata, config):
-    """Save model and metadata to S3 model registry"""
+    """
+    Save model and metadata to S3 model registry with organized folder structure
+    Structure: model_registry/{algorithm}/{version}/
+    """
     print("\n" + "=" * 80)
     print("Saving Model to S3 Model Registry")
     print("=" * 80)
@@ -418,20 +503,24 @@ def save_model_to_s3(model, model_name, model_metadata, config):
     s3_client = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
     
     bucket = config["model_config"]["model_registry_bucket"]
-    prefix = config["model_config"]["model_registry_prefix"]
+    base_prefix = config["model_config"]["model_registry_prefix"]
     
-    # Create versioned model path
+    # Create timestamp for versioning
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_version = f"{model_name}_v{timestamp}"
-    model_key = f"{prefix}{model_version}.pkl"
-    metadata_key = f"{prefix}{model_version}_metadata.json"
+    
+    # Organize by algorithm: model_registry/{algorithm}/v{timestamp}/
+    algorithm_folder = f"{base_prefix}{model_name}/"
+    version_folder = f"{algorithm_folder}v{timestamp}/"
+    
+    model_key = f"{version_folder}model.pkl"
+    metadata_key = f"{version_folder}metadata.json"
     
     # Save model locally first
-    local_model_path = f"/tmp/{model_version}.pkl"
+    local_model_path = f"/tmp/{model_name}_{timestamp}.pkl"
     with open(local_model_path, 'wb') as f:
         pickle.dump(model, f)
     
-    # Upload to S3
+    # Upload model to S3
     print(f"Uploading model to s3://{bucket}/{model_key}")
     s3_client.upload_file(local_model_path, bucket, model_key)
     
@@ -440,17 +529,18 @@ def save_model_to_s3(model, model_name, model_metadata, config):
     s3_client.put_object(
         Bucket=bucket,
         Key=metadata_key,
-        Body=json.dumps(model_metadata, indent=2)
+        Body=json.dumps(model_metadata, indent=2).encode('utf-8')
     )
     
-    # Update latest symlink
-    latest_key = f"{prefix}{model_name}_latest.pkl"
-    latest_metadata_key = f"{prefix}{model_name}_latest_metadata.json"
+    # Create/update latest symlinks in algorithm folder
+    latest_model_key = f"{algorithm_folder}latest/model.pkl"
+    latest_metadata_key = f"{algorithm_folder}latest/metadata.json"
     
+    print(f"Updating latest links...")
     s3_client.copy_object(
         Bucket=bucket,
         CopySource={'Bucket': bucket, 'Key': model_key},
-        Key=latest_key
+        Key=latest_model_key
     )
     s3_client.copy_object(
         Bucket=bucket,
@@ -458,41 +548,64 @@ def save_model_to_s3(model, model_name, model_metadata, config):
         Key=latest_metadata_key
     )
     
-    print(f"✓ Model saved: s3://{bucket}/{model_key}")
-    print(f"✓ Latest link: s3://{bucket}/{latest_key}")
+    # Create version index file
+    version_info = {
+        "version": timestamp,
+        "model_path": f"s3://{bucket}/{model_key}",
+        "metadata_path": f"s3://{bucket}/{metadata_key}",
+        "created_at": timestamp,
+        "algorithm": model_name,
+        "oot_auc": model_metadata.get("oot", {}).get("auc_roc", 0.0)
+    }
     
-    # Cleanup
+    version_index_key = f"{algorithm_folder}versions.json"
+    
+    # Try to load existing versions index
+    versions_list = []
+    try:
+        response = s3_client.get_object(Bucket=bucket, Key=version_index_key)
+        versions_list = json.loads(response['Body'].read().decode('utf-8'))
+    except s3_client.exceptions.NoSuchKey:
+        print("Creating new versions index")
+    
+    # Append new version
+    versions_list.append(version_info)
+    
+    # Sort by timestamp descending (newest first)
+    versions_list.sort(key=lambda x: x['version'], reverse=True)
+    
+    # Upload updated versions index
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=version_index_key,
+        Body=json.dumps(versions_list, indent=2).encode('utf-8')
+    )
+    
+    print(f"\n✓ Model saved to: s3://{bucket}/{model_key}")
+    print(f"✓ Latest link: s3://{bucket}/{latest_model_key}")
+    print(f"✓ Version index: s3://{bucket}/{version_index_key}")
+    print(f"✓ Total versions for {model_name}: {len(versions_list)}")
+    
+    # Cleanup local file
     os.remove(local_model_path)
     
     return f"s3://{bucket}/{model_key}"
 
 
 def main():
-    """Main training pipeline"""
+    """
+    Main training pipeline
+    Loads preprocessed data from S3 and trains specified algorithms
+    """
     print("\n" + "=" * 80)
     print("DIABETES READMISSION MODEL TRAINING PIPELINE")
     print("=" * 80)
     
     # Load configuration
     config = load_config()
-    datamart_uri = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
     
-    # Initialize Spark
-    spark = init_spark()
-    
-    # Load data from gold layer
-    data_sdf = load_gold_data(spark, datamart_uri, config)
-    
-    # Split into temporal windows
-    train_sdf, test_sdf, oot_sdf = split_temporal_windows(
-        data_sdf, 
-        config["temporal_splits"]
-    )
-    
-    # Prepare datasets
-    X_train, y_train, X_test, y_test, X_oot, y_oot, feature_cols = prepare_datasets(
-        train_sdf, test_sdf, oot_sdf
-    )
+    # Load preprocessed data from S3 (no redundant preprocessing!)
+    X_train, y_train, X_test, y_test, X_oot, y_oot, feature_cols = load_preprocessed_data_from_s3()
     
     # Determine which algorithms to train
     training_config = config.get("training_config", {})
@@ -554,8 +667,6 @@ def main():
     print("\n" + "=" * 80)
     print("✓ Training Pipeline Completed Successfully!")
     print("=" * 80)
-    
-    spark.stop()
 
 
 if __name__ == "__main__":

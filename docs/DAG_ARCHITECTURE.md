@@ -227,15 +227,27 @@ Monitoring DAG (Weekly)
 
 ### 2. Model Training DAG (`diab_model_training`)
 
-**Purpose:** Train and validate ML models using temporal windows
+**Purpose:** Train and validate ML models using temporal windows with optimized preprocessing
 
 **Tasks:**
-1. Check model config exists and is valid
-2. Check gold data exists in S3
-3. Check sufficient training data available
-4. Train models (Logistic Regression, Random Forest, XGBoost)
-5. Evaluate on test and OOT windows
-6. Save best model to registry with metadata
+1. **Prerequisite Checks:**
+   - Check model config exists and is valid
+   - Check gold data exists in S3
+   - Check sufficient training data available
+
+2. **Data Preprocessing (runs ONCE):**
+   - Load gold layer data (feature_store + label_store)
+   - Apply temporal window splits (train/test/oot)
+   - Apply StandardScaler preprocessing
+   - Save preprocessed data to `s3://bucket/gold/preprocessed/`
+   - Creates `latest.txt` pointer for downstream tasks
+
+3. **Model Training (runs in PARALLEL):**
+   - Train Logistic Regression (loads preprocessed data)
+   - Train Random Forest (loads preprocessed data)
+   - Train XGBoost (loads preprocessed data)
+   - Each evaluates on test and OOT windows
+   - Each saves to separate algorithm folder in model registry
 
 **Triggers:**
 - Scheduled: Monthly (first Sunday at 3 AM)
@@ -244,10 +256,25 @@ Monitoring DAG (Weekly)
 - Alert-based: Triggered by monitoring if drift detected
 
 **Outputs:**
-- `s3://diab-readmit-123456-model-registry/models/model_<timestamp>.pkl`
-- `s3://diab-readmit-123456-model-registry/metadata/metadata_<timestamp>.json`
+- **Preprocessed Data:** `s3://bucket/gold/preprocessed/train_data_<timestamp>/`
+  - `train_processed.parquet`
+  - `test_processed.parquet`
+  - `oot_processed.parquet`
+  - `scaler.pkl`
+  - `metadata.json`
+- **Models (organized by algorithm):**
+  - `s3://bucket/model_registry/logistic_regression/v<timestamp>/model.pkl`
+  - `s3://bucket/model_registry/random_forest/v<timestamp>/model.pkl`
+  - `s3://bucket/model_registry/xgboost/v<timestamp>/model.pkl`
+  - Each with `latest/` symlink and `versions.json` index
 
-**SLA:** 4 hours (includes hyperparameter tuning)
+**Architecture Benefits:**
+- ✅ **No redundant preprocessing** - Preprocessing runs once, shared by all models
+- ✅ **Parallel training** - All 3 algorithms train simultaneously
+- ✅ **Organized model registry** - Clear folder structure per algorithm
+- ✅ **Version tracking** - Complete history with `versions.json`
+
+**SLA:** 2.5-3 hours (preprocessing ~5 min + parallel training ~2.5 hours)
 
 **Configuration:** `conf/model_config.json`
 

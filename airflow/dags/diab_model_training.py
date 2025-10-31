@@ -210,7 +210,7 @@ def validate_model_config(**context):
 
 default_args = {
     "owner": "ml-eng",
-    "retries": 2,
+    "retries": 0,  # Disable auto-retry for model training (takes hours, manual intervention better)
     "retry_delay": timedelta(minutes=5),
 }
 
@@ -220,6 +220,7 @@ with DAG(
     start_date=datetime(2025, 10, 1),
     schedule_interval=None,  # Trigger manually after data processing
     catchup=False,
+    max_active_runs=1,  # Only one DAG run at a time to prevent duplicate executions
     default_args=default_args,
     description="Train diabetes readmission prediction models with prerequisite checks",
     tags=["ml", "training", "diabetes"],
@@ -266,6 +267,57 @@ with DAG(
         """
     )
     
+    # Data Preprocessing Task - Runs ONCE before all model training
+    # Creates preprocessed data in gold/preprocessed/ folder
+    preprocess_data = EcsRunTaskOperator(
+        task_id="preprocess_training_data",
+        aws_conn_id="aws_default",
+        cluster=ECS_CLUSTER,
+        task_definition=ECS_MODEL_TRAINING_TASK_DEF,
+        launch_type="FARGATE",
+        region_name=AWS_REGION,
+        network_configuration={
+            "awsvpcConfiguration": {
+                "subnets": ECS_SUBNETS,
+                "securityGroups": ECS_SECURITY_GROUPS,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": os.environ.get("ECS_CONTAINER_NAME", "app"),
+                    "command": ["python", "preprocess_train_data.py"],
+                    "environment": [
+                        {"name": "AWS_REGION", "value": AWS_REGION},
+                        {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
+                        {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
+                    ],
+                }
+            ]
+        },
+        awaitCompletion=True,
+        propagate_tags="TASK_DEFINITION",
+        reattach=True,
+        execution_timeout=timedelta(minutes=30),
+        doc_md="""
+        ### Preprocess Training Data
+        Loads gold layer data, applies temporal splits, and preprocesses features.
+        Saves preprocessed data to S3 gold/preprocessed/ folder.
+        
+        This runs ONCE before model training to avoid redundant preprocessing.
+        
+        **Steps:**
+        - Load feature_store and label_store from gold layer
+        - Split into train/test/oot temporal windows
+        - Apply StandardScaler on numeric features
+        - Save preprocessed data to S3 as Parquet
+        - Create 'latest' pointer for downstream tasks
+        
+        **Timeout: 30 minutes**
+        """
+    )
+    
     # Model Training Tasks (ECS Fargate) - One per algorithm for parallel execution
     # Uses dedicated model training task definition with 2vCPU/4GB (vs 1vCPU/2GB for data processing)
     train_logistic_regression = EcsRunTaskOperator(
@@ -296,7 +348,9 @@ with DAG(
                 }
             ]
         },
+        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
+        reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=2),
         doc_md="""
         ### Train Logistic Regression
@@ -337,7 +391,9 @@ with DAG(
                 }
             ]
         },
+        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
+        reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=3),
         doc_md="""
         ### Train Random Forest
@@ -379,7 +435,9 @@ with DAG(
                 }
             ]
         },
+        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
+        reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=3),
         doc_md="""
         ### Train XGBoost
@@ -395,11 +453,12 @@ with DAG(
     )
     
     # Define task dependencies
-    # All three models train in parallel after prerequisites pass
+    # Preprocessing runs once after checks, then all models train in parallel
     chain(
         check_config,
         check_data,
         check_sufficient_data,
+        preprocess_data,
     )
     
-    check_sufficient_data >> [train_logistic_regression, train_random_forest, train_xgboost]
+    preprocess_data >> [train_logistic_regression, train_random_forest, train_xgboost]

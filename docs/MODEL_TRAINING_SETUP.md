@@ -11,20 +11,29 @@ The model training pipeline supports **parallel training of multiple algorithms*
 ```
 DAG: diab_model_training
 │
-├── check_model_config (ShortCircuitOperator)
-│   └── Validates model_config.json
+├── Prerequisite Checks (Sequential)
+│   ├── check_model_config (ShortCircuitOperator)
+│   │   └── Validates model_config.json
+│   ├── check_gold_data_exists (ShortCircuitOperator)
+│   │   └── Ensures feature_store + label_store exist
+│   └── check_sufficient_training_data (ShortCircuitOperator)
+│       └── Verifies >= 10 data partitions
 │
-├── check_gold_data_exists (ShortCircuitOperator)
-│   └── Ensures feature_store + label_store exist
+├── Data Preprocessing (Runs ONCE, 30min timeout)
+│   └── preprocess_training_data (ECS Task - 2vCPU/4GB)
+│       ├── Load gold layer (feature_store + label_store)
+│       ├── Apply temporal splits (train/test/oot)
+│       ├── Apply StandardScaler preprocessing
+│       └── Save to s3://bucket/gold/preprocessed/
 │
-├── check_sufficient_training_data (ShortCircuitOperator)
-│   └── Verifies >= 10 data partitions
-│
-└── Parallel Training (3 ECS Tasks)
+└── Model Training (Parallel, loads preprocessed data)
     ├── train_logistic_regression (2vCPU/4GB, 2hr timeout)
     ├── train_random_forest (2vCPU/4GB, 3hr timeout)
     └── train_xgboost (2vCPU/4GB, 3hr timeout)
 ```
+
+**Key Optimization:** Preprocessing runs ONCE and saves to S3. All 3 training tasks load the same preprocessed data, eliminating redundant preprocessing (3x efficiency improvement).
+
 
 ### ECS Task Definitions
 
@@ -155,6 +164,62 @@ Each algorithm runs as an **independent ECS task** in the DAG:
 - F1-score
 - AUC-ROC (primary metric)
 
+## S3 Data Structure
+
+### Gold Layer (Input)
+
+```
+s3://bucket/gold/
+├── feature_store/                    # Created by data processing DAG
+│   └── partition_date=YYYY-MM-DD/
+│       └── *.parquet
+├── label_store/                      # Created by data processing DAG
+│   └── partition_date=YYYY-MM-DD/
+│       └── *.parquet
+└── preprocessed/                     # Created by preprocessing task
+    ├── latest.txt                    # Points to latest preprocessing run
+    └── train_data_YYYYMMDD_HHMMSS/
+        ├── train_processed.parquet   # Scaled training features + labels
+        ├── test_processed.parquet    # Scaled test features + labels
+        ├── oot_processed.parquet     # Scaled OOT features + labels
+        ├── scaler.pkl                # Fitted StandardScaler object
+        └── metadata.json             # Data shapes, readmission rates, etc.
+```
+
+### Model Registry (Output)
+
+Models are organized by algorithm with version tracking:
+
+```
+s3://bucket/model_registry/
+├── logistic_regression/
+│   ├── latest/                       # Always points to latest model
+│   │   ├── model.pkl
+│   │   └── metadata.json
+│   ├── v20251101_155508/             # Versioned model
+│   │   ├── model.pkl
+│   │   └── metadata.json
+│   ├── v20251101_140000/             # Previous version
+│   │   ├── model.pkl
+│   │   └── metadata.json
+│   └── versions.json                 # Index of all versions
+├── random_forest/
+│   ├── latest/
+│   ├── v20251101_155509/
+│   └── versions.json
+└── xgboost/
+    ├── latest/
+    ├── v20251101_155510/
+    └── versions.json
+```
+
+**Benefits:**
+- ✅ **Organized:** Clear folder per algorithm
+- ✅ **Versioned:** Keep all historical models
+- ✅ **Discoverable:** `latest/` always has current production model
+- ✅ **Traceable:** `versions.json` has full version history with OOT AUC
+- ✅ **Rollback-friendly:** Easy to revert to previous version
+
 ## Files Created/Modified
 
 ### New Files
@@ -162,25 +227,36 @@ Each algorithm runs as an **independent ECS task** in the DAG:
    - Temporal window definitions
    - Model hyperparameters
    - Registry configuration
+   - Algorithm toggle (`enabled_algorithms`)
 
-2. **`model_train.py`**
-   - Main training script
-   - Loads from gold layer
-   - Trains multiple algorithms
-   - Saves to S3 model registry
+2. **`preprocess_train_data.py`** (NEW)
+   - Loads gold layer (feature_store + label_store)
+   - Applies temporal window splits
+   - Applies StandardScaler preprocessing
+   - Saves to `gold/preprocessed/` in S3
 
-3. **`airflow/dags/diab_model_training.py`**
+3. **`model_train.py`**
+   - Loads preprocessed data from S3 (no redundant preprocessing)
+   - Trains single algorithm (from ALGORITHM env var)
+   - Saves to organized model registry structure
+
+4. **`airflow/dags/diab_model_training.py`**
    - Training DAG with prerequisite checks
+   - Preprocessing task (runs once)
+   - 3 parallel training tasks
    - ShortCircuitOperators for validation
-   - ECS task for training execution
 
 ### Modified Files
-4. **`Dockerfile`**
+5. **`Dockerfile`**
+   - Added preprocess_train_data.py copy
    - Added model_train.py copy
 
-## Model Registry Structure
+6. **`requirements.txt`**
+   - Added pyarrow>=18.0.0 for Parquet I/O
 
-Models are saved to S3 with the following structure:
+## Model Registry Structure (Legacy Reference)
+
+Old flat structure (no longer used):
 
 ```
 s3://diab-readmit-123456-model-registry/
@@ -286,37 +362,55 @@ docker push ${ECR_REPO}:latest
 **In Airflow UI:**
 - Watch task progress: 
   - `check_model_config` → `check_gold_data_exists` → `check_sufficient_training_data`
-  - Then 3 parallel tasks: `train_logistic_regression`, `train_random_forest`, `train_xgboost`
-- Graph View shows parallel execution of training tasks
+  - Then: `preprocess_training_data` (runs once)
+  - Finally 3 parallel tasks: `train_logistic_regression`, `train_random_forest`, `train_xgboost`
+- Graph View shows preprocessing followed by parallel execution of training tasks
 - Each task can succeed/fail independently
 
 **In AWS Console:**
 - ECS → Clusters → diab-readmit-demo-cluster → Tasks
-- CloudWatch Logs → /ecs/diab-readmit-demo
+- CloudWatch Logs → /ecs/diab-readmit-demo-model-training
 - Each algorithm will have separate task logs
 
 **Expected Runtime:** 
-- **Parallel execution:** ~2-3 hours (all models train simultaneously)
-- **Sequential execution:** Would take 6-8 hours (if tasks were chained)
+- **Preprocessing:** ~5 minutes (runs once)
+- **Parallel training:** ~2-2.5 hours (all models train simultaneously)
+- **Total:** ~2.5-3 hours
+- **vs Sequential:** Would take 6-8 hours (if tasks were chained)
 
-### Step 6: Verify Model Registry
+### Step 6: Verify Preprocessed Data and Models
 
-After training completes, check S3:
-
+**Check Preprocessed Data:**
 ```bash
-# List all trained models
-aws s3 ls s3://diab-readmit-123456-model-registry/models/readmission/ --recursive
+# Check latest preprocessing
+aws s3 cat s3://diab-readmit-123456-datamart/gold/preprocessed/latest.txt
 
-# Expected output:
-# logistic_regression_v20251031_155508.pkl
-# logistic_regression_v20251031_155508_metadata.json
-# logistic_regression_latest.pkl
-# random_forest_v20251031_155509.pkl
-# random_forest_v20251031_155509_metadata.json
-# random_forest_latest.pkl
-# xgboost_v20251031_155509.pkl
-# xgboost_v20251031_155509_metadata.json
-# xgboost_latest.pkl
+# List preprocessing artifacts
+aws s3 ls s3://diab-readmit-123456-datamart/gold/preprocessed/train_data_20251101_120000/
+# Expected:
+# train_processed.parquet
+# test_processed.parquet
+# oot_processed.parquet
+# scaler.pkl
+# metadata.json
+```
+
+**Check Model Registry (Organized by Algorithm):**
+```bash
+# List all algorithms
+aws s3 ls s3://diab-readmit-123456-model-registry/
+
+# Check specific algorithm versions
+aws s3 ls s3://diab-readmit-123456-model-registry/logistic_regression/
+# Expected structure:
+# latest/model.pkl
+# latest/metadata.json
+# v20251101_155508/model.pkl
+# v20251101_155508/metadata.json
+# versions.json
+
+# View version history
+aws s3 cp s3://diab-readmit-123456-model-registry/xgboost/versions.json -
 ```
 
 ## Task Dependencies
@@ -337,6 +431,12 @@ aws s3 ls s3://diab-readmit-123456-model-registry/models/readmission/ --recursiv
 └──────────┬──────────────────────┘
            │
            ▼
+┌──────────────────────────────┐
+│ preprocess_training_data     │
+│ (Loads, scales, saves to S3) │
+│ 30min timeout                │
+└──────────┬───────────────────┘
+           │
     ┌──────┴──────┬──────────┐
     │             │          │
     ▼             ▼          ▼
@@ -346,11 +446,12 @@ aws s3 ls s3://diab-readmit-123456-model-registry/models/readmission/ --recursiv
 └────────┘  └──────────┘  └──────────┘
 ```
 
-**Benefits of Parallel Execution:**
-1. ⏱️ **Faster:** 2-3 hours vs 6-8 hours sequential
-2. 🔄 **Independent:** One model failure doesn't block others
-3. 📊 **Visibility:** See which algorithms complete first
+**Benefits of This Architecture:**
+1. ⏱️ **Faster:** ~2.5 hours total (preprocessing once + parallel training)
+2. 🔄 **No redundant work:** Preprocessing runs once, shared by all models
+3. 📊 **Consistent:** All models train on identical preprocessed data
 4. 🎛️ **Control:** Disable specific algorithms via config toggle
+5. 🐛 **Debuggable:** Can inspect preprocessed data before training
 
 ## Validation Checks
 
