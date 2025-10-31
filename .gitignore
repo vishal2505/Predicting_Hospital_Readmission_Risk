@@ -215,5 +215,7 @@ data/
 .venv/
 terraform.tfstate
 terraform.tfstate.backup
+terraform.tfstate.*.backup
 *.tfvars
 .DS_Store
+model_train_main2*

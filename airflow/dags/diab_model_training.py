@@ -21,6 +21,7 @@ ECS_TASK_DEF = ECS_TASK_DEF_RAW.split(":")[0] if ":" in ECS_TASK_DEF_RAW else EC
 ECS_SUBNETS = os.environ.get("ECS_SUBNETS", "").split(",") if os.environ.get("ECS_SUBNETS") else []
 ECS_SECURITY_GROUPS = os.environ.get("ECS_SECURITY_GROUPS", "").split(",") if os.environ.get("ECS_SECURITY_GROUPS") else []
 DATAMART_BASE_URI = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
+MODEL_CONFIG_S3_PATH = os.environ.get("MODEL_CONFIG_S3_PATH", "s3://diab-readmit-123456-datamart/config/model_config.json")
 
 
 def check_gold_data_exists(**context):
@@ -91,9 +92,21 @@ def check_sufficient_training_data(**context):
     print("Checking Training Data Sufficiency")
     print("=" * 80)
     
-    # Load model config
-    with open('/opt/airflow/repo/conf/model_config.json', 'r') as f:
-        config = json.load(f)
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+    
+    # Load model config from S3
+    try:
+        config_s3_path = MODEL_CONFIG_S3_PATH.replace("s3://", "")
+        config_bucket = config_s3_path.split("/")[0]
+        config_key = "/".join(config_s3_path.split("/")[1:])
+        
+        print(f"Loading config from s3://{config_bucket}/{config_key}")
+        response = s3_client.get_object(Bucket=config_bucket, Key=config_key)
+        config = json.loads(response['Body'].read().decode('utf-8'))
+    except Exception as e:
+        print(f"✗ Error loading config from S3: {e}")
+        print("   Make sure to upload conf/model_config.json to S3")
+        return False
     
     temporal_splits = config['temporal_splits']
     train_start = temporal_splits['train']['start_date']
@@ -145,9 +158,17 @@ def validate_model_config(**context):
     print("Validating Model Configuration")
     print("=" * 80)
     
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+    
     try:
-        with open('/opt/airflow/repo/conf/model_config.json', 'r') as f:
-            config = json.load(f)
+        # Load config from S3
+        config_s3_path = MODEL_CONFIG_S3_PATH.replace("s3://", "")
+        config_bucket = config_s3_path.split("/")[0]
+        config_key = "/".join(config_s3_path.split("/")[1:])
+        
+        print(f"Loading config from s3://{config_bucket}/{config_key}")
+        response = s3_client.get_object(Bucket=config_bucket, Key=config_key)
+        config = json.loads(response['Body'].read().decode('utf-8'))
         
         # Check required fields
         required_fields = ['temporal_splits', 'model_config', 'training_config']
@@ -178,6 +199,9 @@ def validate_model_config(**context):
         
     except Exception as e:
         print(f"✗ Error validating config: {e}")
+        print(f"   Config path: {MODEL_CONFIG_S3_PATH}")
+        print("   Make sure to upload conf/model_config.json to S3:")
+        print(f"   aws s3 cp conf/model_config.json {MODEL_CONFIG_S3_PATH}")
         return False
 
 
