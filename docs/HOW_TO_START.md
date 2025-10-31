@@ -990,6 +990,210 @@ After data processing completes successfully:
 
 ---
 
+## Update Code - Follow-Up Steps
+
+### Deploying Parallel Model Training Updates
+
+If you've made code updates (e.g., implementing parallel algorithm training), follow these steps to deploy:
+
+#### Step 1: Upload Updated Configuration to S3
+
+After updating `conf/model_config.json` with new settings (e.g., `enabled_algorithms`):
+
+```bash
+# From project root directory
+cd /Users/vishalmishra/MyDocuments/SMU_MITB/Term-4/MLE/Project/Predicting_Hospital_Readmission_Risk
+
+# Upload updated model config
+aws s3 cp conf/model_config.json \
+  s3://diab-readmit-123456-datamart/config/model_config.json \
+  --region ap-southeast-1
+
+# Verify upload
+aws s3 ls s3://diab-readmit-123456-datamart/config/
+```
+
+**What this does:**
+- Updates the configuration used by ECS tasks
+- Enables/disables specific algorithms via `enabled_algorithms` toggle
+- No need to rebuild Docker image for config-only changes
+
+#### Step 2: Build and Push Updated Docker Image
+
+After code changes to `model_train.py`, `airflow/dags/*.py`, or other Python files:
+
+```bash
+# Navigate to Terraform directory
+cd infra/terraform/aws-ec2-airflow-ecs
+
+# This will rebuild and push the Docker image
+terraform apply -auto-approve
+```
+
+**Alternative manual approach:**
+
+```bash
+# From project root
+cd /Users/vishalmishra/MyDocuments/SMU_MITB/Term-4/MLE/Project/Predicting_Hospital_Readmission_Risk
+
+# Get ECR repository URL
+export ECR_REPO=$(cd infra/terraform/aws-ec2-airflow-ecs && terraform output -raw ecr_repository_url)
+
+# Login to ECR
+aws ecr get-login-password --region ap-southeast-1 | \
+  docker login --username AWS --password-stdin ${ECR_REPO}
+
+# Build new image
+docker build -t hospital-readmission-pipeline:latest .
+
+# Tag for ECR
+docker tag hospital-readmission-pipeline:latest ${ECR_REPO}:latest
+
+# Push to ECR
+docker push ${ECR_REPO}:latest
+```
+
+**What this does:**
+- Rebuilds Docker image with latest code changes
+- Pushes to ECR repository
+- ECS will use new image on next task execution
+
+**Expected duration:** 5-10 minutes
+
+#### Step 3: Update Airflow DAGs on EC2
+
+After updating DAG files (e.g., `diab_model_training.py` with parallel tasks):
+
+```bash
+# SSH to EC2 instance
+export EC2_IP=$(cd infra/terraform/aws-ec2-airflow-ecs && terraform output -raw ec2_public_ip)
+ssh -i ~/.ssh/your-key-pair.pem ec2-user@${EC2_IP}
+
+# On EC2 instance:
+cd ~/Predicting_Hospital_Readmission_Risk
+
+# Pull latest code changes
+git pull origin feature/airflow_aws_pipeline
+
+# Restart Airflow to load new DAGs
+docker-compose restart airflow-scheduler airflow-webserver
+
+# Verify containers restarted successfully
+docker-compose ps
+```
+
+**What this does:**
+- Updates DAG definitions with new task structure
+- Loads parallel training tasks (train_logistic_regression, train_random_forest, train_xgboost)
+- Refreshes Airflow scheduler and webserver
+
+**Expected duration:** 1-2 minutes
+
+#### Step 4: Verify Updates in Airflow UI
+
+1. **Open Airflow UI:**
+   ```
+   http://<EC2_PUBLIC_IP>:8080
+   ```
+
+2. **Check DAG Updates:**
+   - Navigate to `diab_model_training` DAG
+   - Click on the DAG to view Graph
+   - **Expected:** You should see 3 parallel training tasks:
+     - `train_logistic_regression`
+     - `train_random_forest`
+     - `train_xgboost`
+
+3. **Verify Task Configuration:**
+   - Click on any training task → "Task Instance Details"
+   - Check that `ALGORITHM` environment variable is set correctly
+
+#### Step 5: Test Updated Pipeline
+
+1. **Trigger Training DAG:**
+   - Click the play button (▶) to trigger manual run
+   - All prerequisite checks should pass
+   - Watch 3 training tasks execute in parallel
+
+2. **Monitor ECS Tasks:**
+   ```bash
+   # List running ECS tasks
+   aws ecs list-tasks \
+     --cluster diab-readmit-demo-cluster \
+     --region ap-southeast-1
+   
+   # You should see 3 tasks running simultaneously
+   ```
+
+3. **Check CloudWatch Logs:**
+   ```bash
+   # Tail logs for all training tasks
+   aws logs tail /aws/ecs/diab-readmit-demo-cluster \
+     --since 10m \
+     --follow \
+     --region ap-southeast-1
+   ```
+
+4. **Verify Model Registry:**
+   ```bash
+   # After training completes, check S3
+   aws s3 ls s3://diab-readmit-123456-model-registry/models/readmission/ --recursive
+   
+   # Expected: 3 model files with latest timestamps
+   # - logistic_regression_v<timestamp>.pkl
+   # - random_forest_v<timestamp>.pkl
+   # - xgboost_v<timestamp>.pkl
+   ```
+
+### Quick Reference: Update Scenarios
+
+| Change Type | Steps Required | Image Rebuild? | Airflow Restart? |
+|-------------|---------------|----------------|------------------|
+| **Config values only** (model_config.json) | Step 1 only | ❌ No | ❌ No |
+| **Python code** (model_train.py, utils/*) | Steps 1, 2 | ✅ Yes | ❌ No |
+| **DAG files** (airflow/dags/*) | Steps 1, 3 | ❌ No | ✅ Yes |
+| **All of above** | Steps 1, 2, 3 | ✅ Yes | ✅ Yes |
+
+### Rollback Procedure
+
+If something goes wrong after updates:
+
+1. **Revert to previous Docker image:**
+   ```bash
+   # List image tags in ECR
+   aws ecr describe-images \
+     --repository-name diab-readmit-pipeline \
+     --region ap-southeast-1
+   
+   # Tag previous image as latest
+   aws ecr batch-get-image \
+     --repository-name diab-readmit-pipeline \
+     --image-ids imageDigest=sha256:xxxxx \
+     --query 'images[].imageManifest' \
+     --output text | \
+   aws ecr put-image \
+     --repository-name diab-readmit-pipeline \
+     --image-tag latest \
+     --image-manifest -
+   ```
+
+2. **Revert DAG changes:**
+   ```bash
+   # On EC2
+   cd ~/Predicting_Hospital_Readmission_Risk
+   git checkout HEAD~1 airflow/dags/diab_model_training.py
+   docker-compose restart airflow-scheduler
+   ```
+
+3. **Revert config changes:**
+   ```bash
+   # Upload previous version of config
+   aws s3 cp conf/model_config.json.backup \
+     s3://diab-readmit-123456-datamart/config/model_config.json
+   ```
+
+---
+
 ## Next Steps
 
 After successful setup and first DAG runs:
