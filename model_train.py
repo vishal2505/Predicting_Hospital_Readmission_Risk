@@ -77,31 +77,34 @@ def load_config(config_path="conf/model_config.json"):
 
 def init_spark(app_name="ModelTraining"):
     """Initialize Spark session with S3 support"""
+    # Initialize SparkSession with S3 support (uses env credentials if present)
     aws_region = os.environ.get("AWS_REGION", "ap-southeast-1")
-    
-    builder = (pyspark.sql.SparkSession.builder
-        .appName(app_name)
+
+
+    provider_chain = ",".join([
+        "com.amazonaws.auth.ContainerCredentialsProvider",          # ECS / EKS / Fargate
+        "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",# if AWS_* are set
+        "org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider",  # EC2/ECS host role
+    ])
+
+    builder = (
+        pyspark.sql.SparkSession.builder
+        .appName("dev")
+        .master("local[*]")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider",
-            ",".join([
-                "com.amazonaws.auth.EnvironmentVariableCredentialsProvider",
-                "com.amazonaws.auth.InstanceProfileCredentialsProvider",
-            ])
-        )
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider", provider_chain)
         .config("spark.hadoop.fs.s3a.endpoint", f"s3.{aws_region}.amazonaws.com")
-        .config("spark.python.profile", "false")
-        .config("spark.python.profile.dump", "/tmp")
     )
-    
-    # Add JARs if available
+
+    # Prefer baked-in JARs; fall back to remote packages if not present (e.g., running outside Docker)
     hadoop_aws_jar = "/opt/spark/jars-extra/hadoop-aws-3.3.4.jar"
     aws_bundle_jar = "/opt/spark/jars-extra/aws-java-sdk-bundle-1.12.639.jar"
     if os.path.exists(hadoop_aws_jar) and os.path.exists(aws_bundle_jar):
         builder = builder.config("spark.jars", f"{hadoop_aws_jar},{aws_bundle_jar}")
     else:
-        builder = builder.config("spark.jars.packages", 
-            "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.639")
-    
+        builder = builder.config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.639")
+
     spark = builder.getOrCreate()
     spark.sparkContext.setLogLevel("ERROR")
     return spark

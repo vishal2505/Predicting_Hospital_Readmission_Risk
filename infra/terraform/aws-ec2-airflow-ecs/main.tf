@@ -61,6 +61,25 @@ resource "aws_security_group" "airflow_sg" {
   }
 }
 
+# Security Group for ECS Tasks
+resource "aws_security_group" "ecs_tasks_sg" {
+  name        = "${local.name_prefix}-ecs-tasks-sg"
+  description = "Allow ECS tasks to access AWS services"
+  vpc_id      = data.aws_vpc.default.id
+
+  # Allow all outbound traffic (needed for S3, ECR, CloudWatch)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-ecs-tasks-sg"
+  }
+}
+
 # IAM role for EC2 to call ECS RunTask and read S3/ECR if needed
 resource "aws_iam_role" "airflow_ec2_role" {
   name               = "${local.name_prefix}-airflow-ec2-role"
@@ -262,8 +281,17 @@ resource "aws_iam_role_policy" "ecs_task_inline" {
     Statement = [
       {
         Effect = "Allow",
-        Action = ["s3:*"],
-        Resource = "*"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ],
+        Resource = [
+          "arn:aws:s3:::diab-readmit-*",
+          "arn:aws:s3:::diab-readmit-*/*"
+        ]
       },
       {
         Effect = "Allow",
