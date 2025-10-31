@@ -116,16 +116,31 @@ def load_gold_data(spark, datamart_uri, config):
     print("Loading Gold Layer Data")
     print("=" * 80)
     
-    # Load label store
+    # Load label store - use wildcard to read all partitions
     label_store_path = f"{datamart_uri}gold/label_store/"
     print(f"Loading labels from: {label_store_path}")
-    labels_sdf = spark.read.parquet(label_store_path)
+    
+    # Try to read with mergeSchema option to handle partitioned data
+    try:
+        labels_sdf = spark.read.option("mergeSchema", "true").parquet(f"{label_store_path}*/*.parquet")
+    except Exception as e:
+        print(f"⚠ Failed to read with partition pattern, trying direct path: {e}")
+        # Fallback: try reading directly (non-partitioned)
+        labels_sdf = spark.read.parquet(label_store_path)
+    
     print(f"✓ Label store loaded: {labels_sdf.count()} records")
     
-    # Load feature store
+    # Load feature store - use wildcard to read all partitions
     feature_store_path = f"{datamart_uri}gold/feature_store/"
     print(f"Loading features from: {feature_store_path}")
-    features_sdf = spark.read.parquet(feature_store_path)
+    
+    try:
+        features_sdf = spark.read.option("mergeSchema", "true").parquet(f"{feature_store_path}*/*.parquet")
+    except Exception as e:
+        print(f"⚠ Failed to read with partition pattern, trying direct path: {e}")
+        # Fallback: try reading directly (non-partitioned)
+        features_sdf = spark.read.parquet(feature_store_path)
+    
     print(f"✓ Feature store loaded: {features_sdf.count()} records")
     
     # Join features and labels
