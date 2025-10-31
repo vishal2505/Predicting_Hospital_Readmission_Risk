@@ -263,9 +263,9 @@ with DAG(
         """
     )
     
-    # Model Training Task (ECS Fargate)
-    train_models = EcsRunTaskOperator(
-        task_id="train_models",
+    # Model Training Tasks (ECS Fargate) - One per algorithm for parallel execution
+    train_logistic_regression = EcsRunTaskOperator(
+        task_id="train_logistic_regression",
         aws_conn_id="aws_default",
         cluster=ECS_CLUSTER,
         task_definition=ECS_TASK_DEF,
@@ -287,30 +287,115 @@ with DAG(
                         {"name": "AWS_REGION", "value": AWS_REGION},
                         {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
                         {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
+                        {"name": "ALGORITHM", "value": "logistic_regression"},
                     ],
                 }
             ]
         },
         propagate_tags="TASK_DEFINITION",
-        execution_timeout=timedelta(hours=4),  # Longer timeout for model training
+        execution_timeout=timedelta(hours=2),
         doc_md="""
-        ### Model Training
-        Runs model training pipeline on ECS Fargate:
-        1. Loads feature_store and label_store from S3
-        2. Splits data into train/test/oot windows
-        3. Trains multiple algorithms (LogisticRegression, RandomForest, XGBoost)
-        4. Performs hyperparameter tuning with RandomizedSearchCV
-        5. Evaluates models on test and OOT sets
-        6. Saves best models to S3 model registry
+        ### Train Logistic Regression
+        Trains Logistic Regression model with hyperparameter tuning:
+        - L1/L2 regularization
+        - Class weight balancing
+        - 5-fold cross-validation
         
-        **Timeout: 4 hours**
+        **Timeout: 2 hours**
+        """
+    )
+    
+    train_random_forest = EcsRunTaskOperator(
+        task_id="train_random_forest",
+        aws_conn_id="aws_default",
+        cluster=ECS_CLUSTER,
+        task_definition=ECS_TASK_DEF,
+        launch_type="FARGATE",
+        region_name=AWS_REGION,
+        network_configuration={
+            "awsvpcConfiguration": {
+                "subnets": ECS_SUBNETS,
+                "securityGroups": ECS_SECURITY_GROUPS,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": os.environ.get("ECS_CONTAINER_NAME", "app"),
+                    "command": ["python", "model_train.py"],
+                    "environment": [
+                        {"name": "AWS_REGION", "value": AWS_REGION},
+                        {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
+                        {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
+                        {"name": "ALGORITHM", "value": "random_forest"},
+                    ],
+                }
+            ]
+        },
+        propagate_tags="TASK_DEFINITION",
+        execution_timeout=timedelta(hours=3),
+        doc_md="""
+        ### Train Random Forest
+        Trains Random Forest model with hyperparameter tuning:
+        - Tree depth and count optimization
+        - Min samples per leaf/split
+        - Class weight balancing
+        - 5-fold cross-validation
+        
+        **Timeout: 3 hours** (more intensive than LogReg)
+        """
+    )
+    
+    train_xgboost = EcsRunTaskOperator(
+        task_id="train_xgboost",
+        aws_conn_id="aws_default",
+        cluster=ECS_CLUSTER,
+        task_definition=ECS_TASK_DEF,
+        launch_type="FARGATE",
+        region_name=AWS_REGION,
+        network_configuration={
+            "awsvpcConfiguration": {
+                "subnets": ECS_SUBNETS,
+                "securityGroups": ECS_SECURITY_GROUPS,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": os.environ.get("ECS_CONTAINER_NAME", "app"),
+                    "command": ["python", "model_train.py"],
+                    "environment": [
+                        {"name": "AWS_REGION", "value": AWS_REGION},
+                        {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
+                        {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
+                        {"name": "ALGORITHM", "value": "xgboost"},
+                    ],
+                }
+            ]
+        },
+        propagate_tags="TASK_DEFINITION",
+        execution_timeout=timedelta(hours=3),
+        doc_md="""
+        ### Train XGBoost
+        Trains XGBoost model with hyperparameter tuning:
+        - Learning rate optimization
+        - Tree depth and count
+        - Subsampling and column sampling
+        - Scale_pos_weight for imbalance
+        - 5-fold cross-validation
+        
+        **Timeout: 3 hours**
         """
     )
     
     # Define task dependencies
+    # All three models train in parallel after prerequisites pass
     chain(
         check_config,
         check_data,
         check_sufficient_data,
-        train_models
     )
+    
+    check_sufficient_data >> [train_logistic_regression, train_random_forest, train_xgboost]

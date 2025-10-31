@@ -494,18 +494,40 @@ def main():
         train_sdf, test_sdf, oot_sdf
     )
     
+    # Determine which algorithms to train
+    training_config = config.get("training_config", {})
+    
+    # Check if running in single-algorithm mode (from DAG)
+    target_algorithm = os.environ.get("ALGORITHM")
+    
+    if target_algorithm:
+        # Single algorithm mode (triggered by DAG task)
+        algorithms_to_train = [target_algorithm]
+        print(f"\n🎯 Single Algorithm Mode: Training only '{target_algorithm}'")
+    else:
+        # Multi-algorithm mode (local/manual execution)
+        enabled = training_config.get("enabled_algorithms", {})
+        algorithms_to_train = [
+            alg for alg, is_enabled in enabled.items() 
+            if is_enabled
+        ]
+        # Fallback to old-style config if enabled_algorithms not present
+        if not algorithms_to_train:
+            algorithms_to_train = training_config.get("algorithms", ["logistic_regression"])
+        print(f"\n🔄 Multi-Algorithm Mode: Training {len(algorithms_to_train)} algorithms")
+    
+    print(f"Algorithms: {algorithms_to_train}\n")
+    
     # Train models
     models = {}
-    training_config = config.get("training_config", {})
-    algorithms = training_config.get("algorithms", ["logistic_regression"])
     
-    if "logistic_regression" in algorithms:
+    if "logistic_regression" in algorithms_to_train:
         models["logistic_regression"] = train_logistic_regression(X_train, y_train, config["model_config"])
     
-    if "random_forest" in algorithms:
+    if "random_forest" in algorithms_to_train:
         models["random_forest"] = train_random_forest(X_train, y_train, config["model_config"])
     
-    if "xgboost" in algorithms:
+    if "xgboost" in algorithms_to_train:
         models["xgboost"] = train_xgboost(X_train, y_train, config["model_config"])
     
     # Evaluate and save models
@@ -522,7 +544,8 @@ def main():
             "test_samples": len(X_test),
             "oot_samples": len(X_oot),
             "performance": results,
-            "config": config
+            "config": config,
+            "execution_mode": "single_algorithm" if target_algorithm else "multi_algorithm"
         }
         
         # Save to S3

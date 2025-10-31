@@ -29,6 +29,11 @@
   },
   "training_config": {
     "algorithms": ["logistic_regression", "random_forest", "xgboost"],
+    "enabled_algorithms": {
+      "logistic_regression": true,
+      "random_forest": true,
+      "xgboost": true
+    },
     "hyperparameter_tuning": true,
     "feature_selection": true,
     "feature_importance_threshold": 0.01,

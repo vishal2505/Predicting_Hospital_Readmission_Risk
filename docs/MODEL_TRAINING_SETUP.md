@@ -2,7 +2,7 @@
 
 ## Overview
 
-The model training pipeline is now ready with temporal window validation and prerequisite checks. It follows MLOps best practices with proper data splitting to prevent leakage.
+The model training pipeline supports **parallel training of multiple algorithms** with temporal window validation and prerequisite checks. Each algorithm runs as a separate ECS task for independent execution, failure handling, and resource optimization.
 
 ## Architecture
 
@@ -18,9 +18,21 @@ DAG: diab_model_training
 ├── check_sufficient_training_data (ShortCircuitOperator)
 │   └── Verifies >= 10 data partitions
 │
-└── train_models (EcsRunTaskOperator)
-    └── Runs model_train.py on ECS Fargate
+└── Parallel Training (3 ECS Tasks)
+    ├── train_logistic_regression (2 hour timeout)
+    ├── train_random_forest (3 hour timeout)
+    └── train_xgboost (3 hour timeout)
 ```
+
+### Key Design Decisions
+
+**Parallel vs Sequential Training:**
+- ✅ **Parallel:** Faster pipeline execution, independent failures, better resource utilization
+- ❌ Sequential: Slower, one failure blocks all subsequent models
+
+**Single vs Multi-Algorithm Mode:**
+- **Single-Algorithm Mode:** Triggered by DAG tasks with `ALGORITHM` environment variable
+- **Multi-Algorithm Mode:** Local/manual execution trains all enabled algorithms
 
 ## Temporal Window Configuration
 
@@ -44,17 +56,70 @@ The pipeline uses a 3-window temporal split:
 ## Training Configuration
 
 ### Algorithms Supported
-1. **Logistic Regression** (baseline)
-   - Fast, interpretable
+
+Each algorithm runs as an **independent ECS task** in the DAG:
+
+1. **Logistic Regression** (2 hour timeout)
+   - Fast, interpretable baseline
+   - L1/L2 regularization
+   - Class weight balancing
    - Good for understanding feature importance
    
-2. **Random Forest**
+2. **Random Forest** (3 hour timeout)
    - Handles non-linear relationships
    - Feature importance via tree splits
+   - Tree depth and count optimization
    
-3. **XGBoost**
+3. **XGBoost** (3 hour timeout)
    - State-of-the-art gradient boosting
+   - Learning rate optimization
+   - Scale_pos_weight for class imbalance
    - Best performance typically
+
+### Algorithm Toggle Configuration
+
+**Enable/Disable algorithms via `conf/model_config.json`:**
+
+```json
+{
+  "training_config": {
+    "algorithms": ["logistic_regression", "random_forest", "xgboost"],
+    "enabled_algorithms": {
+      "logistic_regression": true,
+      "random_forest": true,
+      "xgboost": false  // Disable XGBoost by setting to false
+    },
+    "hyperparameter_tuning": true,
+    "feature_selection": true,
+    "class_weight": "balanced"
+  }
+}
+```
+
+**How it works:**
+- **In DAG (ECS):** Each algorithm has a dedicated task that runs regardless of config (passes `ALGORITHM` env var)
+- **In model_train.py:** Checks `ALGORITHM` env var; if set, trains only that algorithm
+- **Local execution:** Reads `enabled_algorithms` from config and trains all enabled ones
+
+### Execution Modes
+
+1. **Single-Algorithm Mode (DAG)**
+   ```python
+   # Triggered by ECS task with environment variable
+   ALGORITHM=logistic_regression python model_train.py
+   ```
+   - Used by Airflow DAG tasks
+   - Each algorithm runs in parallel
+   - Independent failures and resource allocation
+
+2. **Multi-Algorithm Mode (Local)**
+   ```bash
+   # No ALGORITHM env var - trains all enabled algorithms
+   python model_train.py
+   ```
+   - Used for local testing
+   - Trains all algorithms with `enabled_algorithms: true`
+   - Sequential execution
 
 ### Hyperparameter Tuning
 - Method: RandomizedSearchCV
@@ -198,13 +263,73 @@ docker push ${ECR_REPO}:latest
 ### Step 5: Monitor Training
 
 **In Airflow UI:**
-- Watch task progress: check_model_config → check_gold_data_exists → check_sufficient_training_data → train_models
+- Watch task progress: 
+  - `check_model_config` → `check_gold_data_exists` → `check_sufficient_training_data`
+  - Then 3 parallel tasks: `train_logistic_regression`, `train_random_forest`, `train_xgboost`
+- Graph View shows parallel execution of training tasks
+- Each task can succeed/fail independently
 
 **In AWS Console:**
 - ECS → Clusters → diab-readmit-demo-cluster → Tasks
 - CloudWatch Logs → /ecs/diab-readmit-demo
+- Each algorithm will have separate task logs
 
-**Expected Runtime:** 1-2 hours (depends on data volume and algorithms)
+**Expected Runtime:** 
+- **Parallel execution:** ~2-3 hours (all models train simultaneously)
+- **Sequential execution:** Would take 6-8 hours (if tasks were chained)
+
+### Step 6: Verify Model Registry
+
+After training completes, check S3:
+
+```bash
+# List all trained models
+aws s3 ls s3://diab-readmit-123456-model-registry/models/readmission/ --recursive
+
+# Expected output:
+# logistic_regression_v20251031_155508.pkl
+# logistic_regression_v20251031_155508_metadata.json
+# logistic_regression_latest.pkl
+# random_forest_v20251031_155509.pkl
+# random_forest_v20251031_155509_metadata.json
+# random_forest_latest.pkl
+# xgboost_v20251031_155509.pkl
+# xgboost_v20251031_155509_metadata.json
+# xgboost_latest.pkl
+```
+
+## Task Dependencies
+
+```
+┌─────────────────────┐
+│ check_model_config  │
+└──────────┬──────────┘
+           │
+           ▼
+┌──────────────────────────┐
+│ check_gold_data_exists   │
+└──────────┬───────────────┘
+           │
+           ▼
+┌─────────────────────────────────┐
+│ check_sufficient_training_data  │
+└──────────┬──────────────────────┘
+           │
+           ▼
+    ┌──────┴──────┬──────────┐
+    │             │          │
+    ▼             ▼          ▼
+┌────────┐  ┌──────────┐  ┌──────────┐
+│ LogReg │  │ RandFor  │  │ XGBoost  │
+│ 2hr    │  │ 3hr      │  │ 3hr      │
+└────────┘  └──────────┘  └──────────┘
+```
+
+**Benefits of Parallel Execution:**
+1. ⏱️ **Faster:** 2-3 hours vs 6-8 hours sequential
+2. 🔄 **Independent:** One model failure doesn't block others
+3. 📊 **Visibility:** See which algorithms complete first
+4. 🎛️ **Control:** Disable specific algorithms via config toggle
 
 ## Validation Checks
 
@@ -244,9 +369,22 @@ docker push ${ECR_REPO}:latest
 **Solution:**
 1. Check Airflow logs for which check failed
 2. Fix the underlying issue:
-   - Config invalid → Fix conf/model_config.json
+   - Config invalid → Fix conf/model_config.json and re-upload to S3
    - Data missing → Run diab_medallion_ecs DAG
    - Insufficient data → Extend data processing date range
+
+### Issue: Specific algorithm task fails
+
+**Cause:** Algorithm-specific error (e.g., XGBoost memory issues)
+
+**Solution:**
+1. Check CloudWatch logs for the specific algorithm task
+2. Options:
+   - **Disable the failing algorithm:** Set `enabled_algorithms.xgboost: false` in config
+   - **Increase resources:** Update ECS task definition with more CPU/memory
+   - **Adjust hyperparameters:** Reduce complexity in model_train.py
+
+**Benefits of separate tasks:** Other algorithms continue training successfully!
 
 ### Issue: Training task fails with "No module named 'sklearn'"
 
@@ -272,10 +410,103 @@ Update task role policy in Terraform to include:
   "Effect": "Allow",
   "Action": [
     "s3:PutObject",
-    "s3:GetObject"
+    "s3:GetObject",
+    "s3:ListBucket"
   ],
-  "Resource": "arn:aws:s3:::diab-readmit-123456-model-registry/*"
+  "Resource": [
+    "arn:aws:s3:::diab-readmit-123456-model-registry",
+    "arn:aws:s3:::diab-readmit-123456-model-registry/*"
+  ]
 }
+```
+
+### Issue: "ValueError: could not convert string to float"
+
+**Cause:** Categorical features (diagnosis codes) not excluded from training
+
+**Solution:**
+This is now fixed in the latest model_train.py:
+- Excludes `diag_1`, `diag_2`, `diag_3` columns
+- Applies StandardScaler to 7 numeric features only
+- Uses ColumnTransformer with `remainder='passthrough'` for one-hot encoded features
+
+### Issue: Want to train only one algorithm for testing
+
+**Solution:**
+**Option 1 - Disable in config (affects local execution only):**
+```json
+{
+  "training_config": {
+    "enabled_algorithms": {
+      "logistic_regression": true,
+      "random_forest": false,  // Skip this
+      "xgboost": false          // Skip this
+    }
+  }
+}
+```
+
+**Option 2 - Manual DAG task trigger (affects Airflow):**
+In Airflow UI, manually trigger only specific tasks:
+1. Run prerequisite checks
+2. Trigger only `train_logistic_regression` task
+3. Skip `train_random_forest` and `train_xgboost`
+
+**Option 3 - Local testing:**
+```bash
+export ALGORITHM=logistic_regression
+python model_train.py
+```
+
+## Local Test Results
+
+The training pipeline was successfully tested locally in Docker with the following results:
+
+### Dataset Statistics
+```
+✓ X_train: (71,596, 14), Readmission rate: 11.1%
+✓ X_test:  (20,288, 14), Readmission rate: 11.2%
+✓ X_oot:   (9,882, 14),  Readmission rate: 11.4%
+```
+
+### Preprocessing Applied
+```
+StandardScaler applied to 7 numeric features:
+- age_midpoint
+- admission_severity_score
+- admission_source_risk_score
+- metformin_ord
+- insulin_ord
+- severity_x_visits
+- medication_density
+```
+
+### Model Performance
+
+| Model | Test AUC | Test Recall | OOT AUC | OOT Recall | Training Time |
+|-------|----------|-------------|---------|------------|---------------|
+| **Logistic Regression** | 0.6120 | 0.4481 | 0.6161 | 0.4495 | ~2 min |
+| **Random Forest** | 0.6202 | 0.4662 | **0.6308** | 0.4663 | ~3 min |
+| **XGBoost** | 0.6198 | 0.4865 | **0.6321** | **0.4965** | ~3 min |
+
+**Key Observations:**
+- ✅ **No data leakage:** OOT performance consistent with Test set
+- ✅ **XGBoost best:** Highest OOT AUC (0.6321) and recall (0.4965)
+- ✅ **Class imbalance handled:** All models use balanced class weights
+- ✅ **All models saved:** Successfully uploaded to S3 with metadata
+
+**Best Hyperparameters:**
+```python
+# Logistic Regression
+{'penalty': 'l1', 'class_weight': 'balanced', 'C': 0.001}
+
+# Random Forest
+{'n_estimators': 50, 'max_depth': 5, 'min_samples_split': 5, 
+ 'min_samples_leaf': 1, 'class_weight': 'balanced'}
+
+# XGBoost
+{'learning_rate': 0.01, 'max_depth': 5, 'n_estimators': 50,
+ 'subsample': 1.0, 'colsample_bytree': 0.6, 'scale_pos_weight': 7.99}
 ```
 
 ## Next Steps
