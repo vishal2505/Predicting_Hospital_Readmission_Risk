@@ -27,8 +27,52 @@ from sklearn.preprocessing import StandardScaler
 
 def load_config(config_path="conf/model_config.json"):
     """Load model configuration"""
-    with open(config_path, 'r') as f:
-        return json.load(f)
+    # Priority order:
+    # 1. Environment variable MODEL_CONFIG_S3_URI -> download from S3
+    # 2. Local file at config_path
+    # 3. Environment variables MODEL_CONFIG_BUCKET and MODEL_CONFIG_KEY
+
+    s3_uri = os.environ.get("MODEL_CONFIG_S3_URI")
+    if s3_uri:
+        # Expect s3://bucket/key/path.json
+        if s3_uri.startswith("s3://"):
+            try:
+                _, _, rest = s3_uri.partition("s3://")
+                bucket, _, key = rest.partition("/")
+                local_tmp = "/tmp/model_config.json"
+                s3 = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
+                print(f"Downloading model config from s3://{bucket}/{key} to {local_tmp}")
+                s3.download_file(bucket, key, local_tmp)
+                with open(local_tmp, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"✗ Error downloading config from {s3_uri}: {e}")
+        else:
+            print(f"MODEL_CONFIG_S3_URI provided but does not start with s3://: {s3_uri}")
+
+    # Fallback: local file
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"✗ Error reading local config {config_path}: {e}")
+
+    # Last resort: build from MODEL_CONFIG_BUCKET and MODEL_CONFIG_KEY
+    bucket = os.environ.get('MODEL_CONFIG_BUCKET')
+    key = os.environ.get('MODEL_CONFIG_KEY')
+    if bucket and key:
+        try:
+            local_tmp = '/tmp/model_config.json'
+            s3 = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
+            print(f"Downloading model config from s3://{bucket}/{key} to {local_tmp}")
+            s3.download_file(bucket, key, local_tmp)
+            with open(local_tmp, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"✗ Error downloading config from s3://{bucket}/{key}: {e}")
+
+    raise FileNotFoundError(f"Model config not found locally at {config_path} and no valid S3 config provided.")
 
 
 def init_spark(app_name="ModelTraining"):

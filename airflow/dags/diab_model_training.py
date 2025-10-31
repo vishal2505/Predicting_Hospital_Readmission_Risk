@@ -286,6 +286,7 @@ with DAG(
                     "environment": [
                         {"name": "AWS_REGION", "value": AWS_REGION},
                         {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
+                        {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
                     ],
                 }
             ]
