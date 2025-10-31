@@ -198,15 +198,19 @@ def split_temporal_windows(data_sdf, temporal_splits):
 
 
 def prepare_datasets(train_sdf, test_sdf, oot_sdf):
-    """Convert Spark DataFrames to pandas and prepare X, y"""
+    """Convert Spark DataFrames to pandas and prepare X, y with scaling"""
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.compose import ColumnTransformer
+    
     print("\n" + "=" * 80)
     print("Preparing Datasets")
     print("=" * 80)
     
-    # Get feature columns
+    # Get feature columns (exclude meta columns and diagnosis codes)
     all_cols = train_sdf.columns
     feature_cols = [c for c in all_cols 
-                   if c not in ["encounter_id", "snapshot_date", "label", "medical_specialty"]]
+                   if c not in ["encounter_id", "snapshot_date", "label", "medical_specialty", 
+                               "diag_1", "diag_2", "diag_3"]]
     
     print(f"Feature columns: {len(feature_cols)}")
     print(f"Features: {feature_cols[:10]}... (showing first 10)")
@@ -217,7 +221,7 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
     test_pdf = test_sdf.toPandas()
     oot_pdf = oot_sdf.toPandas()
     
-    # Prepare X and y
+    # Prepare X and y (raw features)
     X_train = train_pdf[feature_cols]
     y_train = train_pdf["label"]
     X_test = test_pdf[feature_cols]
@@ -229,7 +233,32 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
     print(f"✓ X_test:  {X_test.shape}, Readmission rate: {y_test.mean():.3f}")
     print(f"✓ X_oot:   {X_oot.shape}, Readmission rate: {y_oot.mean():.3f}")
     
-    return X_train, y_train, X_test, y_test, X_oot, y_oot, feature_cols
+    # Apply StandardScaler on specific numeric columns
+    print("\nApplying StandardScaler to numeric features...")
+    numeric_cols = [
+        'age_midpoint', 'admission_severity_score', 'admission_source_risk_score',
+        'metformin_ord', 'insulin_ord', 'severity_x_visits', 'medication_density'
+    ]
+    
+    # Filter to only include numeric_cols that exist in feature_cols
+    numeric_cols = [c for c in numeric_cols if c in feature_cols]
+    print(f"Scaling {len(numeric_cols)} numeric columns: {numeric_cols}")
+    
+    scaler = ColumnTransformer(
+        transformers=[('num', StandardScaler(), numeric_cols)],
+        remainder='passthrough'
+    )
+    
+    scaler.fit(X_train)
+    X_train_processed = scaler.transform(X_train)
+    X_test_processed = scaler.transform(X_test)
+    X_oot_processed = scaler.transform(X_oot)
+    
+    print(f"✓ X_train_processed: {X_train_processed.shape}")
+    print(f"✓ X_test_processed:  {X_test_processed.shape}")
+    print(f"✓ X_oot_processed:   {X_oot_processed.shape}")
+    
+    return X_train_processed, y_train, X_test_processed, y_test, X_oot_processed, y_oot, feature_cols
 
 
 def train_logistic_regression(X_train, y_train, config):
