@@ -154,20 +154,20 @@ cd ../../../
 docker build -t diab-readmit-pipeline:latest .
 
 # Tag for ECR
-docker tag diab-readmit-pipeline:latest $ECR_REPO:latest
+docker tag diab-readmit-pipeline:latest ${ECR_REPO}:latest
 
 # Optional: Add timestamp tag for versioning
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-docker tag diab-readmit-pipeline:latest $ECR_REPO:$TIMESTAMP
+docker tag diab-readmit-pipeline:latest ${ECR_REPO}:$TIMESTAMP
 ```
 
 **Step 4: Push to ECR**
 ```bash
 # Push latest tag
-docker push $ECR_REPO:latest
+docker push ${ECR_REPO}:latest
 
 # Push timestamp tag (optional)
-docker push $ECR_REPO:$TIMESTAMP
+docker push ${ECR_REPO}:$TIMESTAMP
 ```
 
 **Step 5: Update task definition (if needed)**
