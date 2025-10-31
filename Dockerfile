@@ -30,6 +30,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY main.py ./
 COPY model_train.py ./
+COPY preprocess_train_data.py ./
 COPY utils/ ./utils/
 COPY data/ ./data/
 COPY conf/ ./conf/
