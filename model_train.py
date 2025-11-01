@@ -532,9 +532,34 @@ def save_model_to_s3(model, model_name, model_metadata, config):
         Body=json.dumps(model_metadata, indent=2).encode('utf-8')
     )
     
+    # Save dedicated performance metrics file
+    performance_key = f"{version_folder}performance.json"
+    performance_data = {
+        "algorithm": model_name,
+        "version": timestamp,
+        "training_date": model_metadata.get("training_date"),
+        "metrics": model_metadata.get("performance", {}),
+        "data_info": {
+            "training_samples": model_metadata.get("training_samples"),
+            "test_samples": model_metadata.get("test_samples"),
+            "oot_samples": model_metadata.get("oot_samples"),
+            "feature_count": model_metadata.get("feature_count")
+        },
+        "temporal_splits": model_metadata.get("temporal_splits", {}),
+        "best_cv_score": model_metadata.get("performance", {}).get("test", {}).get("auc_roc", 0.0)
+    }
+    
+    print(f"Uploading performance metrics to s3://{bucket}/{performance_key}")
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=performance_key,
+        Body=json.dumps(performance_data, indent=2).encode('utf-8')
+    )
+    
     # Create/update latest symlinks in algorithm folder
     latest_model_key = f"{algorithm_folder}latest/model.pkl"
     latest_metadata_key = f"{algorithm_folder}latest/metadata.json"
+    latest_performance_key = f"{algorithm_folder}latest/performance.json"
     
     print(f"Updating latest links...")
     s3_client.copy_object(
@@ -547,15 +572,24 @@ def save_model_to_s3(model, model_name, model_metadata, config):
         CopySource={'Bucket': bucket, 'Key': metadata_key},
         Key=latest_metadata_key
     )
+    s3_client.copy_object(
+        Bucket=bucket,
+        CopySource={'Bucket': bucket, 'Key': performance_key},
+        Key=latest_performance_key
+    )
     
     # Create version index file
     version_info = {
         "version": timestamp,
         "model_path": f"s3://{bucket}/{model_key}",
         "metadata_path": f"s3://{bucket}/{metadata_key}",
+        "performance_path": f"s3://{bucket}/{performance_key}",
         "created_at": timestamp,
         "algorithm": model_name,
-        "oot_auc": model_metadata.get("oot", {}).get("auc_roc", 0.0)
+        "test_auc": model_metadata.get("performance", {}).get("test", {}).get("auc_roc", 0.0),
+        "oot_auc": model_metadata.get("performance", {}).get("oot", {}).get("auc_roc", 0.0),
+        "test_accuracy": model_metadata.get("performance", {}).get("test", {}).get("accuracy", 0.0),
+        "oot_accuracy": model_metadata.get("performance", {}).get("oot", {}).get("accuracy", 0.0)
     }
     
     version_index_key = f"{algorithm_folder}versions.json"
@@ -582,7 +616,9 @@ def save_model_to_s3(model, model_name, model_metadata, config):
     )
     
     print(f"\n✓ Model saved to: s3://{bucket}/{model_key}")
-    print(f"✓ Latest link: s3://{bucket}/{latest_model_key}")
+    print(f"✓ Metadata saved to: s3://{bucket}/{metadata_key}")
+    print(f"✓ Performance metrics saved to: s3://{bucket}/{performance_key}")
+    print(f"✓ Latest links: s3://{bucket}/{algorithm_folder}latest/")
     print(f"✓ Version index: s3://{bucket}/{version_index_key}")
     print(f"✓ Total versions for {model_name}: {len(versions_list)}")
     
@@ -616,7 +652,7 @@ def main():
     if target_algorithm:
         # Single algorithm mode (triggered by DAG task)
         algorithms_to_train = [target_algorithm]
-        print(f"\n🎯 Single Algorithm Mode: Training only '{target_algorithm}'")
+        print(f"\n Single Algorithm Mode: Training only '{target_algorithm}'")
     else:
         # Multi-algorithm mode (local/manual execution)
         enabled = training_config.get("enabled_algorithms", {})
@@ -627,7 +663,7 @@ def main():
         # Fallback to old-style config if enabled_algorithms not present
         if not algorithms_to_train:
             algorithms_to_train = training_config.get("algorithms", ["logistic_regression"])
-        print(f"\n🔄 Multi-Algorithm Mode: Training {len(algorithms_to_train)} algorithms")
+        print(f"\n Multi-Algorithm Mode: Training {len(algorithms_to_train)} algorithms")
     
     print(f"Algorithms: {algorithms_to_train}\n")
     
