@@ -21,7 +21,7 @@
     "feature_store_path": "gold/feature_store/",
     "label_store_path": "gold/label_store/",
     "model_registry_bucket": "diab-readmit-123456-model-registry",
-    "model_registry_prefix": "models/readmission/",
+    "model_registry_prefix": "models/",
     "experiment_name": "diabetes_readmission_prediction",
     "random_state": 42,
     "test_size": 0.2,
