@@ -107,7 +107,10 @@ resource "aws_iam_role_policy" "airflow_ec2_inline" {
         Effect = "Allow",
         Action = [
           "ecs:RunTask",
-          "ecs:Describe*",
+          "ecs:DescribeTasks",
+          "ecs:DescribeTaskDefinition",
+          "ecs:ListTasks",
+          "ecs:StopTask",
           "ec2:Describe*",
           "iam:PassRole"
         ],
