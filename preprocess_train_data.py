@@ -79,28 +79,80 @@ def init_spark(app_name="DataPreprocessing"):
 
 
 def load_gold_data(spark, base_uri, config):
-    """Load feature and label stores from gold layer"""
+    """Load feature and label stores from gold layer with .parquet folder structures"""
     print("\n" + "=" * 80)
     print("Loading Gold Layer Data")
     print("=" * 80)
-    
-    feature_path = f"{base_uri}{config['model_config']['feature_store_path']}"
-    label_path = f"{base_uri}{config['model_config']['label_store_path']}"
-    
-    print(f"Feature store: {feature_path}")
-    print(f"Label store: {label_path}")
-    
-    feature_sdf = spark.read.option("mergeSchema", "true").parquet(feature_path)
-    label_sdf = spark.read.option("mergeSchema", "true").parquet(label_path)
-    
-    # Join on encounter_id and snapshot_date
-    data_sdf = feature_sdf.join(
-        label_sdf,
+
+    # --------------------------
+    # LABEL STORE
+    # --------------------------
+    label_store_path = f"{base_uri.rstrip('/')}/gold/label_store/"
+    print(f"Loading labels from: {label_store_path}")
+
+    # Patterns to match e.g.
+    # s3://.../gold/label_store/gold_label_store_1999_01.parquet/part-00000.parquet
+    label_patterns = [
+        f"{label_store_path}*.parquet/*.parquet",     # gold_label_store_YYYY_MM.parquet/part-*.parquet
+        f"{label_store_path}*/*.parquet",             # fallback for nested folders
+        f"{label_store_path}*.parquet",               # direct parquet files
+        label_store_path,                             # auto-detect
+    ]
+
+    labels_sdf = None
+    for pattern in label_patterns:
+        try:
+            print(f"  Trying pattern: {pattern}")
+            labels_sdf = spark.read.option("mergeSchema", "true").parquet(pattern)
+            count = labels_sdf.count()
+            print(f"  ✓ Success with pattern: {pattern} → {count} records")
+            break
+        except Exception as e:
+            print(f"  ✗ Failed ({pattern}): {str(e)[:150]}")
+            continue
+
+    if labels_sdf is None:
+        raise FileNotFoundError(f"Could not load label_store from {label_store_path}")
+
+    # --------------------------
+    # FEATURE STORE
+    # --------------------------
+    feature_store_path = f"{base_uri.rstrip('/')}/gold/feature_store/"
+    print(f"\nLoading features from: {feature_store_path}")
+
+    feature_patterns = [
+        f"{feature_store_path}*.parquet/*.parquet",   # gold_feature_store_YYYY_MM.parquet/part-*.parquet
+        f"{feature_store_path}*/*.parquet",
+        f"{feature_store_path}*.parquet",
+        feature_store_path,
+    ]
+
+    features_sdf = None
+    for pattern in feature_patterns:
+        try:
+            print(f"  Trying pattern: {pattern}")
+            features_sdf = spark.read.option("mergeSchema", "true").parquet(pattern)
+            count = features_sdf.count()
+            print(f"  ✓ Success with pattern: {pattern} → {count} records")
+            break
+        except Exception as e:
+            print(f"  ✗ Failed ({pattern}): {str(e)[:150]}")
+            continue
+
+    if features_sdf is None:
+        raise FileNotFoundError(f"Could not load feature_store from {feature_store_path}")
+
+    # --------------------------
+    # JOIN FEATURES + LABELS
+    # --------------------------
+    print("\nJoining features and labels...")
+    data_sdf = labels_sdf.join(
+        features_sdf,
         on=["encounter_id", "snapshot_date"],
         how="inner"
     )
-    
-    print(f"✓ Loaded {data_sdf.count():,} records")
+
+    print(f"✓ Joined data: {data_sdf.count()} records\n")
     return data_sdf
 
 
