@@ -296,7 +296,6 @@ with DAG(
                 }
             ]
         },
-        awaitCompletion=True,
         propagate_tags="TASK_DEFINITION",
         reattach=True,
         execution_timeout=timedelta(minutes=30),
@@ -348,7 +347,6 @@ with DAG(
                 }
             ]
         },
-        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
         reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=2),
@@ -391,7 +389,6 @@ with DAG(
                 }
             ]
         },
-        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
         reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=3),
@@ -435,7 +432,6 @@ with DAG(
                 }
             ]
         },
-        awaitCompletion=True,  # Wait for ECS task to complete before marking as success
         propagate_tags="TASK_DEFINITION",
         reattach=True,  # Reattach to existing task if Airflow worker restarts
         execution_timeout=timedelta(hours=3),
