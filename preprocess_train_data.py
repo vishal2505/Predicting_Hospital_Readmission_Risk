@@ -19,6 +19,11 @@ from sklearn.pipeline import Pipeline
 import numpy as np
 
 
+def log1p_transform(x):
+    """Apply log1p transformation to handle skewed distributions"""
+    return np.log1p(x)
+
+
 def load_config(config_path="conf/model_config.json"):
     """Load model configuration from S3 or local file"""
     s3_uri = os.environ.get("MODEL_CONFIG_S3_URI")
@@ -250,12 +255,8 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
     print(f"Log1p transform (3 columns): {log_transform_cols}")
     print(f"Scale only (4 columns): {scale_only_cols}")
     
-    # Define log1p transformation function
-    def log1p_transform(x):
-        """Apply log1p transformation to handle skewed distributions"""
-        return np.log1p(x)
-    
     # Create pipeline with log transformation followed by scaling
+    # Note: log1p_transform is defined at module level so it can be pickled
     log_then_scale_pipeline = Pipeline(steps=[
         ('log', FunctionTransformer(log1p_transform, validate=False)),
         ('scaler', StandardScaler())
