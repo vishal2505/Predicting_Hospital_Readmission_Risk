@@ -16,6 +16,7 @@ from airflow.models.baseoperator import chain
 
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 ECS_CLUSTER = os.environ.get("ECS_CLUSTER", "")
+ECS_CONTAINER_NAME = os.environ.get("ECS_CONTAINER_NAME", "app")
 
 # Use model training task definition (2vCPU/4GB) for inference
 ECS_MODEL_TRAINING_TASK_DEF_RAW = os.environ.get("ECS_MODEL_TRAINING_TASK_DEF", "")
@@ -270,13 +271,22 @@ check_preprocessing = ShortCircuitOperator(
 run_inference = EcsRunTaskOperator(
     task_id='run_model_inference',
     dag=dag,
-    task_definition=ECS_MODEL_TRAINING_TASK_DEF,
+    aws_conn_id='aws_default',
     cluster=ECS_CLUSTER,
+    task_definition=ECS_MODEL_TRAINING_TASK_DEF,
+    launch_type='FARGATE',
     region_name=AWS_REGION,
+    network_configuration={
+        'awsvpcConfiguration': {
+            'subnets': ECS_SUBNETS,
+            'securityGroups': ECS_SECURITY_GROUPS,
+            'assignPublicIp': 'ENABLED',
+        },
+    },
     overrides={
         'containerOverrides': [
             {
-                'name': 'diab-readmit-container',
+                'name': ECS_CONTAINER_NAME,
                 'command': ['python', 'model_inference.py'],
                 'environment': [
                     {'name': 'AWS_REGION', 'value': AWS_REGION},
@@ -288,15 +298,8 @@ run_inference = EcsRunTaskOperator(
             },
         ],
     },
-    network_configuration={
-        'awsvpcConfiguration': {
-            'subnets': ECS_SUBNETS,
-            'securityGroups': ECS_SECURITY_GROUPS,
-            'assignPublicIp': 'ENABLED',
-        },
-    },
-    awslogs_group=f'/ecs/{ECS_MODEL_TRAINING_TASK_DEF}',
-    awslogs_stream_prefix='ecs/model-inference',
+    propagate_tags='TASK_DEFINITION',
+    reattach=True,
     execution_timeout=timedelta(minutes=30),  # Inference should be faster than training
 )
 
