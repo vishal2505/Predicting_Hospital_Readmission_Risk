@@ -272,6 +272,7 @@ run_inference = EcsRunTaskOperator(
     dag=dag,
     task_definition=ECS_MODEL_TRAINING_TASK_DEF,
     cluster=ECS_CLUSTER,
+    region_name=AWS_REGION,
     overrides={
         'containerOverrides': [
             {

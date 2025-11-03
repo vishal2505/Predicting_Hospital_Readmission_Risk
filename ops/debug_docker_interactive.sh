@@ -40,3 +40,14 @@ docker run -it --rm \
   -e MODEL_CONFIG_S3_URI="s3://diab-readmit-123456-datamart/config/model_config.json" \
   503382476502.dkr.ecr.ap-southeast-1.amazonaws.com/diab-readmit-pipeline:latest \
   /bin/bash
+
+
+## To debug using local image
+docker run -it --rm \
+  -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+  -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+  -e AWS_REGION="ap-southeast-1" \
+  -e DATAMART_BASE_URI="s3a://diab-readmit-123456-datamart/" \
+  -e MODEL_CONFIG_S3_URI="s3://diab-readmit-123456-datamart/config/model_config.json" \
+  hospital-readmission-pipeline:latest \
+  /bin/bash
