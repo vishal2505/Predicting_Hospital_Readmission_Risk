@@ -13,8 +13,10 @@ import pandas as pd
 import pyspark
 import pyspark.sql.functions as F
 from pyspark.sql.functions import col
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, FunctionTransformer
 from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+import numpy as np
 
 
 def load_config(config_path="conf/model_config.json"):
@@ -232,13 +234,24 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
     # Filter to only include numeric columns that exist in the dataset
     numeric_cols = [c for c in numeric_cols if c in feature_cols]
     
-    print(f"\nApplying StandardScaler to numeric features...")
+    print(f"\nApplying Log1p + StandardScaler to numeric features...")
     print(f"Scaling {len(numeric_cols)} numeric columns: {numeric_cols}")
     
-    # Create ColumnTransformer with StandardScaler
+    # Define log1p transformation function
+    def log1p_transform(x):
+        """Apply log1p transformation to handle skewed distributions"""
+        return np.log1p(x)
+    
+    # Create pipeline with log transformation followed by scaling
+    numeric_pipeline = Pipeline(steps=[
+        ('log', FunctionTransformer(log1p_transform, validate=False)),
+        ('scaler', StandardScaler())
+    ])
+    
+    # Create ColumnTransformer with numeric pipeline
     scaler = ColumnTransformer(
         transformers=[
-            ('num', StandardScaler(), numeric_cols)
+            ('num', numeric_pipeline, numeric_cols)
         ],
         remainder='passthrough'  # Keep other features as-is
     )

@@ -157,12 +157,73 @@ Each algorithm runs as an **independent ECS task** in the DAG:
 - Scoring metric: AUC-ROC
 - Iterations: 20 per algorithm
 
+### Preprocessing Features
+
+**File:** `preprocess_train_data.py`
+
+The preprocessing pipeline includes advanced transformations for optimal model performance:
+
+#### Log1p Transformation
+Applied to skewed numeric features **before** StandardScaler:
+- Handles heavily skewed distributions
+- Stabilizes variance
+- Improves model convergence
+
+**Implementation:**
+```python
+def log1p_transform(x):
+    """Apply log1p transformation to handle skewed distributions"""
+    return np.log1p(x)
+
+# Create pipeline with log transformation followed by scaling
+numeric_pipeline = Pipeline(steps=[
+    ('log', FunctionTransformer(log1p_transform, validate=False)),
+    ('scaler', StandardScaler())
+])
+```
+
+**Applied to features:**
+- `age_midpoint` - Age distribution (right-skewed)
+- `admission_severity_score` - Severity scores (varies by encounter)
+- `admission_source_risk_score` - Risk scores (varies by source)
+- `metformin_ord` - Medication ordinal (dosage levels)
+- `insulin_ord` - Insulin ordinal (dosage levels)
+- `severity_x_visits` - Interaction feature (multiplicative)
+- `medication_density` - Medication count / stay duration
+
+**Why Log1p?**
+- Better than log(): Handles zeros without NaN
+- Reduces impact of outliers
+- Makes distributions more Gaussian-like
+- Proven effective in notebook experiments
+
 ### Evaluation Metrics
-- Accuracy
-- Precision
-- Recall
-- F1-score
-- AUC-ROC (primary metric)
+
+The pipeline calculates comprehensive metrics for both **Test** and **OOT** windows:
+
+#### Standard Classification Metrics
+- **Accuracy** - Overall correctness
+- **Precision** - Positive predictive value
+- **Recall** - Sensitivity / True positive rate
+- **F1-score** - Harmonic mean of precision and recall
+
+#### Advanced Performance Metrics
+- **AUC-ROC** - Area under ROC curve (primary metric for tuning)
+- **GINI Coefficient** - `2 * AUC - 1` (measures model discrimination power)
+- **PR-AUC** - Precision-Recall AUC (better for imbalanced data)
+
+#### Feature Importance
+Extracted for all three algorithms:
+- **Logistic Regression**: Coefficient magnitudes (absolute values)
+- **Random Forest**: Feature importance from tree splits
+- **XGBoost**: Gain-based feature importance
+
+**Output:** Top 20 features saved to `performance.json` for each model
+
+**Why These Metrics?**
+- **GINI**: Better for comparing models (ranges -1 to 1, 0 = random)
+- **PR-AUC**: More informative than AUC-ROC for imbalanced datasets
+- **Feature Importance**: Provides model interpretability and debugging insights
 
 ## S3 Data Structure
 

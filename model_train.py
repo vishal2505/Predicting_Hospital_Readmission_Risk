@@ -20,7 +20,8 @@ import xgboost as xgb
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.metrics import (
     roc_auc_score, accuracy_score, precision_score, 
-    recall_score, f1_score, make_scorer, classification_report
+    recall_score, f1_score, make_scorer, classification_report,
+    average_precision_score
 )
 from sklearn.preprocessing import StandardScaler
 
@@ -463,7 +464,7 @@ def train_xgboost(X_train, y_train, config):
 
 
 def evaluate_model(model, X_test, y_test, X_oot, y_oot, model_name):
-    """Evaluate model on test and OOT sets"""
+    """Evaluate model on test and OOT sets with comprehensive metrics"""
     print("\n" + "=" * 80)
     print(f"Evaluating {model_name}")
     print("=" * 80)
@@ -474,21 +475,106 @@ def evaluate_model(model, X_test, y_test, X_oot, y_oot, model_name):
         y_pred = model.predict(X)
         y_pred_proba = model.predict_proba(X)[:, 1]
         
+        # Calculate AUC-ROC
+        auc_roc = roc_auc_score(y, y_pred_proba)
+        
+        # Calculate GINI coefficient (2*AUC - 1)
+        gini = 2 * auc_roc - 1
+        
+        # Calculate PR-AUC (better for imbalanced datasets)
+        pr_auc = average_precision_score(y, y_pred_proba)
+        
         metrics = {
             'accuracy': accuracy_score(y, y_pred),
             'precision': precision_score(y, y_pred),
             'recall': recall_score(y, y_pred),
             'f1': f1_score(y, y_pred),
-            'auc_roc': roc_auc_score(y, y_pred_proba)
+            'auc_roc': auc_roc,
+            'gini': gini,
+            'pr_auc': pr_auc
         }
         
         results[dataset_name.lower()] = metrics
         
         print(f"\n{dataset_name} Set Performance:")
-        for metric, value in metrics.items():
-            print(f"  {metric.upper()}: {value:.4f}")
+        print(f"  AUC-ROC:   {metrics['auc_roc']:.4f}")
+        print(f"  GINI:      {metrics['gini']:.4f}")
+        print(f"  PR-AUC:    {metrics['pr_auc']:.4f}")
+        print(f"  Accuracy:  {metrics['accuracy']:.4f}")
+        print(f"  Precision: {metrics['precision']:.4f}")
+        print(f"  Recall:    {metrics['recall']:.4f}")
+        print(f"  F1-Score:  {metrics['f1']:.4f}")
     
     return results
+
+
+def extract_feature_importance(model, feature_cols, model_name, top_n=20):
+    """
+    Extract feature importance from trained model
+    
+    Args:
+        model: Trained sklearn model
+        feature_cols: List of feature column names
+        model_name: Name of the algorithm (for appropriate extraction method)
+        top_n: Number of top features to return
+    
+    Returns:
+        dict: Feature importance data with 'importance' list and 'top_features' list
+    """
+    print(f"\nExtracting feature importance for {model_name}...")
+    
+    importance_data = {
+        'method': None,
+        'importance': [],
+        'top_features': []
+    }
+    
+    try:
+        if model_name == 'logistic_regression':
+            # For logistic regression, use coefficients
+            if hasattr(model, 'coef_'):
+                coefficients = model.coef_[0]
+                importance_list = [
+                    {'feature': feat, 'importance': float(coef), 'abs_importance': abs(float(coef))}
+                    for feat, coef in zip(feature_cols, coefficients)
+                ]
+                # Sort by absolute value
+                importance_list.sort(key=lambda x: x['abs_importance'], reverse=True)
+                importance_data['method'] = 'coefficients'
+                importance_data['importance'] = importance_list
+                importance_data['top_features'] = importance_list[:top_n]
+                
+                print(f"  ✓ Extracted coefficients for {len(feature_cols)} features")
+                print(f"\n  Top {min(top_n, len(importance_list))} Features:")
+                for i, item in enumerate(importance_list[:top_n], 1):
+                    print(f"    {i}. {item['feature']}: {item['importance']:.4f}")
+        
+        elif model_name in ['random_forest', 'xgboost']:
+            # For tree-based models, use feature_importances_
+            if hasattr(model, 'feature_importances_'):
+                importances = model.feature_importances_
+                importance_list = [
+                    {'feature': feat, 'importance': float(imp)}
+                    for feat, imp in zip(feature_cols, importances)
+                ]
+                # Sort by importance
+                importance_list.sort(key=lambda x: x['importance'], reverse=True)
+                importance_data['method'] = 'feature_importances'
+                importance_data['importance'] = importance_list
+                importance_data['top_features'] = importance_list[:top_n]
+                
+                print(f"  ✓ Extracted feature importances for {len(feature_cols)} features")
+                print(f"\n  Top {min(top_n, len(importance_list))} Features:")
+                for i, item in enumerate(importance_list[:top_n], 1):
+                    print(f"    {i}. {item['feature']}: {item['importance']:.4f}")
+        
+        else:
+            print(f"  ⚠ Feature importance extraction not supported for {model_name}")
+    
+    except Exception as e:
+        print(f"  ✗ Error extracting feature importance: {e}")
+    
+    return importance_data
 
 
 def save_model_to_s3(model, model_name, model_metadata, config):
@@ -538,7 +624,26 @@ def save_model_to_s3(model, model_name, model_metadata, config):
         "algorithm": model_name,
         "version": timestamp,
         "training_date": model_metadata.get("training_date"),
-        "metrics": model_metadata.get("performance", {}),
+        "metrics": {
+            "test": {
+                "auc_roc": model_metadata.get("performance", {}).get("test", {}).get("auc_roc", 0.0),
+                "gini": model_metadata.get("performance", {}).get("test", {}).get("gini", 0.0),
+                "pr_auc": model_metadata.get("performance", {}).get("test", {}).get("pr_auc", 0.0),
+                "accuracy": model_metadata.get("performance", {}).get("test", {}).get("accuracy", 0.0),
+                "precision": model_metadata.get("performance", {}).get("test", {}).get("precision", 0.0),
+                "recall": model_metadata.get("performance", {}).get("test", {}).get("recall", 0.0),
+                "f1": model_metadata.get("performance", {}).get("test", {}).get("f1", 0.0)
+            },
+            "oot": {
+                "auc_roc": model_metadata.get("performance", {}).get("oot", {}).get("auc_roc", 0.0),
+                "gini": model_metadata.get("performance", {}).get("oot", {}).get("gini", 0.0),
+                "pr_auc": model_metadata.get("performance", {}).get("oot", {}).get("pr_auc", 0.0),
+                "accuracy": model_metadata.get("performance", {}).get("oot", {}).get("accuracy", 0.0),
+                "precision": model_metadata.get("performance", {}).get("oot", {}).get("precision", 0.0),
+                "recall": model_metadata.get("performance", {}).get("oot", {}).get("recall", 0.0),
+                "f1": model_metadata.get("performance", {}).get("oot", {}).get("f1", 0.0)
+            }
+        },
         "data_info": {
             "training_samples": model_metadata.get("training_samples"),
             "test_samples": model_metadata.get("test_samples"),
@@ -546,7 +651,7 @@ def save_model_to_s3(model, model_name, model_metadata, config):
             "feature_count": model_metadata.get("feature_count")
         },
         "temporal_splits": model_metadata.get("temporal_splits", {}),
-        "best_cv_score": model_metadata.get("performance", {}).get("test", {}).get("auc_roc", 0.0)
+        "feature_importance": model_metadata.get("feature_importance", {})
     }
     
     print(f"Uploading performance metrics to s3://{bucket}/{performance_key}")
@@ -587,7 +692,11 @@ def save_model_to_s3(model, model_name, model_metadata, config):
         "created_at": timestamp,
         "algorithm": model_name,
         "test_auc": model_metadata.get("performance", {}).get("test", {}).get("auc_roc", 0.0),
+        "test_gini": model_metadata.get("performance", {}).get("test", {}).get("gini", 0.0),
+        "test_pr_auc": model_metadata.get("performance", {}).get("test", {}).get("pr_auc", 0.0),
         "oot_auc": model_metadata.get("performance", {}).get("oot", {}).get("auc_roc", 0.0),
+        "oot_gini": model_metadata.get("performance", {}).get("oot", {}).get("gini", 0.0),
+        "oot_pr_auc": model_metadata.get("performance", {}).get("oot", {}).get("pr_auc", 0.0),
         "test_accuracy": model_metadata.get("performance", {}).get("test", {}).get("accuracy", 0.0),
         "oot_accuracy": model_metadata.get("performance", {}).get("oot", {}).get("accuracy", 0.0)
     }
@@ -683,6 +792,9 @@ def main():
     for model_name, model in models.items():
         results = evaluate_model(model, X_test, y_test, X_oot, y_oot, model_name)
         
+        # Extract feature importance
+        feature_importance = extract_feature_importance(model, feature_cols, model_name, top_n=20)
+        
         # Prepare metadata
         metadata = {
             "model_name": model_name,
@@ -693,6 +805,7 @@ def main():
             "test_samples": len(X_test),
             "oot_samples": len(X_oot),
             "performance": results,
+            "feature_importance": feature_importance,
             "config": config,
             "execution_mode": "single_algorithm" if target_algorithm else "multi_algorithm"
         }

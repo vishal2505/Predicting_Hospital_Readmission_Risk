@@ -448,8 +448,56 @@ with DAG(
         """
     )
     
+    # Generate model comparison after all training completes
+    generate_comparison = EcsRunTaskOperator(
+        task_id="generate_model_comparison",
+        aws_conn_id="aws_default",
+        cluster=ECS_CLUSTER,
+        task_definition=ECS_MODEL_TRAINING_TASK_DEF,
+        launch_type="FARGATE",
+        region_name=AWS_REGION,
+        network_configuration={
+            "awsvpcConfiguration": {
+                "subnets": ECS_SUBNETS,
+                "securityGroups": ECS_SECURITY_GROUPS,
+                "assignPublicIp": "ENABLED",
+            }
+        },
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": os.environ.get("ECS_CONTAINER_NAME", "app"),
+                    "command": ["python", "generate_model_comparison.py"],
+                    "environment": [
+                        {"name": "AWS_REGION", "value": AWS_REGION},
+                        {"name": "DATAMART_BASE_URI", "value": DATAMART_BASE_URI},
+                        {"name": "MODEL_CONFIG_S3_URI", "value": MODEL_CONFIG_S3_PATH},
+                    ],
+                }
+            ]
+        },
+        propagate_tags="TASK_DEFINITION",
+        reattach=True,
+        execution_timeout=timedelta(minutes=10),
+        doc_md="""
+        ### Generate Model Comparison
+        Creates comprehensive comparison of all trained models:
+        - Loads performance metrics from S3
+        - Generates comparison table with all metrics
+        - Identifies best model by OOT GINI
+        - Saves comparison as JSON and CSV to S3
+        
+        **Output:**
+        - `latest_model_comparison.json` - Full comparison data
+        - `latest_model_comparison.csv` - Excel-friendly format
+        
+        **Timeout: 10 minutes**
+        """
+    )
+    
     # Define task dependencies
-    # Preprocessing runs once after checks, then all models train in parallel
+    # Preprocessing runs once after checks, then all models train in parallel,
+    # finally comparison is generated
     chain(
         check_config,
         check_data,
@@ -457,4 +505,4 @@ with DAG(
         preprocess_data,
     )
     
-    preprocess_data >> [train_logistic_regression, train_random_forest, train_xgboost]
+    preprocess_data >> [train_logistic_regression, train_random_forest, train_xgboost] >> generate_comparison
