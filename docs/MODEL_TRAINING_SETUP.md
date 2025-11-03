@@ -164,7 +164,7 @@ Each algorithm runs as an **independent ECS task** in the DAG:
 The preprocessing pipeline includes advanced transformations for optimal model performance:
 
 #### Log1p Transformation
-Applied to skewed numeric features **before** StandardScaler:
+Applied to **3 skewed numeric features** before StandardScaler:
 - Handles heavily skewed distributions
 - Stabilizes variance
 - Improves model convergence
@@ -175,27 +175,34 @@ def log1p_transform(x):
     """Apply log1p transformation to handle skewed distributions"""
     return np.log1p(x)
 
-# Create pipeline with log transformation followed by scaling
-numeric_pipeline = Pipeline(steps=[
+# Columns that get log1p + scaling
+log_then_scale_pipeline = Pipeline(steps=[
     ('log', FunctionTransformer(log1p_transform, validate=False)),
+    ('scaler', StandardScaler())
+])
+
+# Columns that get scaling only (no log)
+scale_only_pipeline = Pipeline(steps=[
     ('scaler', StandardScaler())
 ])
 ```
 
-**Applied to features:**
+**Applied to 3 columns (log1p + scale):**
 - `age_midpoint` - Age distribution (right-skewed)
-- `admission_severity_score` - Severity scores (varies by encounter)
-- `admission_source_risk_score` - Risk scores (varies by source)
-- `metformin_ord` - Medication ordinal (dosage levels)
-- `insulin_ord` - Insulin ordinal (dosage levels)
-- `severity_x_visits` - Interaction feature (multiplicative)
-- `medication_density` - Medication count / stay duration
+- `severity_x_visits` - Interaction feature (multiplicative, highly skewed)
+- `medication_density` - Medication count / stay duration (skewed)
 
-**Why Log1p?**
-- Better than log(): Handles zeros without NaN
-- Reduces impact of outliers
-- Makes distributions more Gaussian-like
-- Proven effective in notebook experiments
+**Applied to 4 columns (scale only):**
+- `admission_severity_score` - Already normalized severity scores
+- `admission_source_risk_score` - Risk scores (not highly skewed)
+- `metformin_ord` - Medication ordinal (discrete levels)
+- `insulin_ord` - Insulin ordinal (discrete levels)
+
+**Why Log1p on Only 3 Columns?**
+- These 3 features have extreme skewness that benefits from log transform
+- Other numeric features are already well-distributed or discrete
+- Applying log to already-normalized features can cause numerical issues
+- Matches the validated approach from training notebook
 
 ### Evaluation Metrics
 

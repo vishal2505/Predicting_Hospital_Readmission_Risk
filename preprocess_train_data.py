@@ -220,8 +220,16 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
     print(f"✓ X_test:  {X_test.shape}, Readmission rate: {y_test.mean():.3f}")
     print(f"✓ X_oot:   {X_oot.shape}, Readmission rate: {y_oot.mean():.3f}")
     
-    # Define numeric columns for StandardScaler (from working notebook)
-    numeric_cols = [
+    # Define columns that need log1p transformation (from working notebook)
+    # Only these 3 columns have skewed distributions that benefit from log transform
+    log_transform_cols = [
+        'age_midpoint',
+        'severity_x_visits',
+        'medication_density'
+    ]
+    
+    # Define all numeric columns for scaling
+    all_numeric_cols = [
         'age_midpoint',
         'admission_severity_score',
         'admission_source_risk_score',
@@ -231,11 +239,16 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
         'medication_density'
     ]
     
-    # Filter to only include numeric columns that exist in the dataset
-    numeric_cols = [c for c in numeric_cols if c in feature_cols]
+    # Filter to only include columns that exist in the dataset
+    log_transform_cols = [c for c in log_transform_cols if c in feature_cols]
+    all_numeric_cols = [c for c in all_numeric_cols if c in feature_cols]
     
-    print(f"\nApplying Log1p + StandardScaler to numeric features...")
-    print(f"Scaling {len(numeric_cols)} numeric columns: {numeric_cols}")
+    # Columns that get scaled but NOT log-transformed
+    scale_only_cols = [c for c in all_numeric_cols if c not in log_transform_cols]
+    
+    print(f"\nApplying preprocessing transformations...")
+    print(f"Log1p transform (3 columns): {log_transform_cols}")
+    print(f"Scale only (4 columns): {scale_only_cols}")
     
     # Define log1p transformation function
     def log1p_transform(x):
@@ -243,15 +256,21 @@ def prepare_datasets(train_sdf, test_sdf, oot_sdf):
         return np.log1p(x)
     
     # Create pipeline with log transformation followed by scaling
-    numeric_pipeline = Pipeline(steps=[
+    log_then_scale_pipeline = Pipeline(steps=[
         ('log', FunctionTransformer(log1p_transform, validate=False)),
         ('scaler', StandardScaler())
     ])
     
-    # Create ColumnTransformer with numeric pipeline
+    # Create pipeline with just scaling (no log transform)
+    scale_only_pipeline = Pipeline(steps=[
+        ('scaler', StandardScaler())
+    ])
+    
+    # Create ColumnTransformer with both pipelines
     scaler = ColumnTransformer(
         transformers=[
-            ('num', numeric_pipeline, numeric_cols)
+            ('log_scale', log_then_scale_pipeline, log_transform_cols),
+            ('scale_only', scale_only_pipeline, scale_only_cols)
         ],
         remainder='passthrough'  # Keep other features as-is
     )
