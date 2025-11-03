@@ -24,6 +24,15 @@ from sklearn.metrics import (
     average_precision_score
 )
 from sklearn.preprocessing import StandardScaler
+import numpy as np
+
+
+def log1p_transform(x):
+    """
+    Apply log1p transformation to handle skewed distributions
+    Note: Must be defined at module level for pickle serialization
+    """
+    return np.log1p(x)
 
 
 def load_preprocessed_data_from_s3():

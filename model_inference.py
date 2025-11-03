@@ -14,6 +14,14 @@ from sklearn.preprocessing import StandardScaler, FunctionTransformer
 from sklearn.pipeline import Pipeline
 
 
+def log1p_transform(x):
+    """
+    Apply log1p transformation to handle skewed distributions
+    Note: Must be defined at module level for pickle serialization
+    """
+    return np.log1p(x)
+
+
 def load_config(config_path="conf/model_config.json"):
     """Load model configuration from S3 or local file"""
     s3_uri = os.environ.get("MODEL_CONFIG_S3_URI")
