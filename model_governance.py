@@ -3,20 +3,21 @@ Model Governance Script - Production Version
 Makes automated decisions about model retraining based on monitoring results
 
 This script:
-1. Reads monitoring results from S3 (gold/model_monitoring/)
+1. Reads monitoring results from model-registry bucket (JSON)
 2. Extracts latest snapshot metrics (AUC, PSI)
 3. Applies governance thresholds:
    - AUC < 0.70 OR PSI > 0.25 → Retrain (critical)
    - PSI > 0.10 → Schedule Retrain (warning)
    - Otherwise → No Action (healthy)
-4. Saves governance decision to S3 (gold/model_governance/)
+4. Saves governance decision as JSON to model-registry bucket
 5. Optionally triggers retraining (if auto_retrain=true)
 
 Environment Variables:
     AWS_REGION: AWS region (default: ap-southeast-1)
     DATAMART_BASE_URI: S3 base URI (e.g., s3a://bucket/prefix/)
-    MODEL_ALGORITHM: Model algorithm name (e.g., xgboost)
+    MODEL_ALGORITHM: Model algorithm name (optional, auto-selects best if not provided)
     AUTO_RETRAIN: Enable auto-retrain trigger (default: false)
+    MODEL_CONFIG_S3_PATH: S3 path to model config (for auto-selection)
 
 Governance Thresholds:
     AUC_THRESHOLD = 0.70 (below this triggers retrain)
@@ -26,14 +27,18 @@ Governance Thresholds:
 
 import os
 import sys
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, desc
+import json
+import boto3
+from datetime import datetime
 
 # Configuration
 AWS_REGION = os.environ.get("AWS_REGION", "ap-southeast-1")
 DATAMART_BASE_URI = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
-MODEL_ALGORITHM = os.environ.get("MODEL_ALGORITHM", "xgboost")
+MODEL_CONFIG_S3_PATH = os.environ.get("MODEL_CONFIG_S3_PATH", "s3://diab-readmit-123456-datamart/config/model_config.json")
 AUTO_RETRAIN = os.environ.get("AUTO_RETRAIN", "false").lower() == "true"
+
+# Model algorithm - can be overridden, otherwise auto-selects best
+MODEL_ALGORITHM_OVERRIDE = os.environ.get("MODEL_ALGORITHM", None)
 
 # Ensure S3A protocol
 if DATAMART_BASE_URI.startswith("s3://"):
@@ -45,82 +50,129 @@ PSI_WARNING = 0.10
 PSI_CRITICAL = 0.25
 
 
+def get_best_model_algorithm():
+    """
+    Get the best model algorithm from model comparison results
+    Same logic as model monitoring
+    
+    Returns:
+        str: Model algorithm name (e.g., 'xgboost')
+    """
+    print("=" * 80)
+    print("Identifying Best Model")
+    print("=" * 80)
+    
+    # If MODEL_ALGORITHM is explicitly provided, use it
+    if MODEL_ALGORITHM_OVERRIDE:
+        print(f"✓ Using explicitly specified model: {MODEL_ALGORITHM_OVERRIDE}")
+        return MODEL_ALGORITHM_OVERRIDE
+    
+    # Otherwise, load from model comparison
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+    
+    # Try to get model registry info from config
+    try:
+        # Step 1: Parse config S3 path (config is in datamart bucket)
+        config_s3_path = MODEL_CONFIG_S3_PATH.replace("s3://", "").replace("s3a://", "")
+        config_bucket = config_s3_path.split("/")[0]
+        config_key = "/".join(config_s3_path.split("/")[1:])
+        
+        print(f"Step 1: Loading config from s3://{config_bucket}/{config_key}")
+        response = s3_client.get_object(Bucket=config_bucket, Key=config_key)
+        config = json.loads(response['Body'].read().decode('utf-8'))
+        
+        # Step 2: Extract model registry bucket from config (different from config bucket!)
+        model_registry_bucket = config["model_config"]["model_registry_bucket"]
+        model_registry_prefix = config["model_config"]["model_registry_prefix"]
+        
+        print(f"Step 2: Model registry is at s3://{model_registry_bucket}/{model_registry_prefix}")
+        
+        # Step 3: Load comparison from model registry bucket
+        comparison_key = f"{model_registry_prefix}latest_model_comparison.json"
+        print(f"Step 3: Loading comparison from s3://{model_registry_bucket}/{comparison_key}")
+        
+        response = s3_client.get_object(Bucket=model_registry_bucket, Key=comparison_key)
+        comparison = json.loads(response['Body'].read().decode('utf-8'))
+        
+        recommended_model = comparison.get('recommended_model')
+        recommendation_reason = comparison.get('recommendation_reason')
+        
+        print(f"✓ Best Model: {recommended_model}")
+        print(f"  Reason: {recommendation_reason}")
+        print()
+        
+        return recommended_model
+        
+    except Exception as e:
+        print(f"⚠ Could not load model comparison: {e}")
+        print("  Falling back to default: xgboost")
+        print()
+        return "xgboost"
+
+
 def make_governance_decision():
     """
     Main governance function
     
     Workflow:
-    1. Initialize Spark with S3 configuration
-    2. Read monitoring results from S3
-    3. Get latest snapshot metrics
-    4. Apply governance thresholds
-    5. Make decision (Retrain / Schedule Retrain / No Action)
-    6. Save governance decision to S3
-    7. Optionally trigger retraining
+    1. Identify best model algorithm (or use override)
+    2. Load model registry config
+    3. Read monitoring results from model-registry bucket (JSON)
+    4. Get latest snapshot metrics
+    5. Apply governance thresholds
+    6. Make decision (Retrain / Schedule Retrain / No Action)
+    7. Save governance decision as JSON to model-registry bucket
+    8. Optionally trigger retraining
     """
     print("=" * 80)
     print("Model Governance")
     print("=" * 80)
-    print(f"Model Algorithm: {MODEL_ALGORITHM}")
-    print(f"Datamart URI: {DATAMART_BASE_URI}")
+    
+    # Load model registry config
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+    config_s3_path = MODEL_CONFIG_S3_PATH.replace("s3://", "").replace("s3a://", "")
+    config_bucket = config_s3_path.split("/")[0]
+    config_key = "/".join(config_s3_path.split("/")[1:])
+    
+    response = s3_client.get_object(Bucket=config_bucket, Key=config_key)
+    config = json.loads(response['Body'].read().decode('utf-8'))
+    model_registry_bucket = config["model_config"]["model_registry_bucket"]
+    model_registry_prefix = config["model_config"]["model_registry_prefix"]
+    
+    # Get the model algorithm to govern
+    MODEL_ALGORITHM = get_best_model_algorithm()
+    
+    print(f"Governing Model: {MODEL_ALGORITHM}")
     print(f"Auto-Retrain: {AUTO_RETRAIN}")
     print()
     
-    # Initialize Spark with S3 configuration
-    print("Initializing Spark...")
-    spark = (
-        SparkSession.builder
-        .appName("ModelGovernance")
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", 
-                "com.amazonaws.auth.DefaultAWSCredentialsProviderChain")
-        .config("spark.hadoop.fs.s3a.endpoint", f"s3.{AWS_REGION}.amazonaws.com")
-        .master("local[*]")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
-    print("✓ Spark initialized\n")
+    # --- Read monitoring data from model registry ---
+    print("Loading monitoring results from model registry...")
+    monitoring_key = f"{model_registry_prefix}monitoring/{MODEL_ALGORITHM}_latest_monitoring.json"
     
-    # Paths
-    monitoring_path = f"{DATAMART_BASE_URI}gold/model_monitoring/{MODEL_ALGORITHM}_monitoring.parquet"
-    governance_path = f"{DATAMART_BASE_URI}gold/model_governance/{MODEL_ALGORITHM}_governance.parquet"
-    
-    print(f"Monitoring input: {monitoring_path}")
-    print(f"Governance output: {governance_path}\n")
-    
-    # --- Read monitoring data ---
-    print("Loading monitoring results...")
     try:
-        monitoring_df = spark.read.parquet(monitoring_path)
-        record_count = monitoring_df.count()
-        print(f"✓ Loaded {record_count} monitoring records\n")
+        response = s3_client.get_object(Bucket=model_registry_bucket, Key=monitoring_key)
+        monitoring_data = json.loads(response['Body'].read().decode('utf-8'))
+        
+        print(f"✓ Loaded monitoring from s3://{model_registry_bucket}/{monitoring_key}")
+        print(f"  Last updated: {monitoring_data['last_updated']}")
+        print(f"  Latest snapshot: {monitoring_data['latest_snapshot_month']}")
+        print()
         
     except Exception as e:
         print(f"✗ Error loading monitoring results: {e}")
-        print("  Make sure monitoring DAG task has run successfully")
-        spark.stop()
+        print("  Make sure monitoring task has run successfully")
         sys.exit(1)
     
-    # --- Get latest snapshot by date ---
-    print("Finding latest snapshot...")
-    latest_df = (
-        monitoring_df
-        .orderBy(desc("snapshot_month"))
-        .limit(1)
-    )
+    # --- Extract latest metrics ---
+    print("Analyzing latest metrics...")
+    latest_metrics = monitoring_data['latest_metrics']
+    snapshot_month = monitoring_data['latest_snapshot_month']
     
-    if latest_df.count() == 0:
-        print("✗ No monitoring records found")
-        spark.stop()
-        sys.exit(1)
-    
-    latest_record = latest_df.collect()[0]
-    
-    # Extract metrics
-    auc = latest_record["auc"]
-    psi = latest_record["psi"]
-    snapshot_month = latest_record["snapshot_month"]
-    row_count = latest_record["row_count"]
+    auc = latest_metrics.get('auc')
+    psi = latest_metrics.get('psi')
+    gini = latest_metrics.get('gini')
+    row_count = latest_metrics.get('row_count')
     
     print(f"✓ Latest snapshot: {snapshot_month}\n")
     
@@ -187,30 +239,49 @@ def make_governance_decision():
     print("=" * 80)
     
     try:
-        # Create governance record
-        governance_record = spark.createDataFrame(
-            [(
-                MODEL_ALGORITHM,
-                snapshot_month,
-                float(auc) if auc is not None else None,
-                float(psi) if psi is not None else None,
-                decision,
-                '; '.join(reason) if reason else "Model metrics within acceptable range"
-            )],
-            ["model_name", "latest_snapshot", "auc", "psi", "decision", "reason"]
+        # Create governance decision JSON
+        governance_json = {
+            "algorithm": MODEL_ALGORITHM,
+            "last_updated": datetime.utcnow().isoformat() + "Z",
+            "latest_snapshot_month": snapshot_month,
+            "metrics": {
+                "auc": float(auc) if auc is not None else None,
+                "gini": float(gini) if gini is not None else None,
+                "psi": float(psi) if psi is not None else None,
+                "row_count": int(row_count) if row_count is not None else None
+            },
+            "thresholds": {
+                "auc_threshold": AUC_THRESHOLD,
+                "psi_warning": PSI_WARNING,
+                "psi_critical": PSI_CRITICAL
+            },
+            "decision": decision,
+            "retrain_needed": retrain_needed,
+            "reason": '; '.join(reason) if reason else "Model metrics within acceptable range",
+            "auto_retrain_enabled": AUTO_RETRAIN
+        }
+        
+        # Save to model registry bucket
+        governance_key = f"{model_registry_prefix}governance/{MODEL_ALGORITHM}_latest_governance.json"
+        s3_client.put_object(
+            Bucket=model_registry_bucket,
+            Key=governance_key,
+            Body=json.dumps(governance_json, indent=2),
+            ContentType='application/json'
         )
         
-        # Save to S3
-        governance_record.write.mode("overwrite").parquet(governance_path)
-        print(f"✓ Governance decision saved to:\n  {governance_path}\n")
+        governance_s3_path = f"s3://{model_registry_bucket}/{governance_key}"
+        print(f"✓ Governance decision saved to:\n  {governance_s3_path}\n")
         
-        # Print record
-        print("Governance Record:")
-        governance_record.show(truncate=False)
+        # Print decision summary
+        print("Governance Decision:")
+        print(json.dumps(governance_json, indent=2))
+        print()
         
     except Exception as e:
         print(f"✗ Error saving governance decision: {e}")
-        spark.stop()
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
     
     # --- Trigger retraining (optional) ---
@@ -230,14 +301,24 @@ def make_governance_decision():
         print("or boto3 to invoke training DAG programmatically.")
         print()
         
-        # Example: Write trigger file to S3
-        trigger_path = f"{DATAMART_BASE_URI}triggers/retrain_trigger_{MODEL_ALGORITHM}.txt"
-        trigger_df = spark.createDataFrame(
-            [(snapshot_month, decision, '; '.join(reason))],
-            ["snapshot_month", "decision", "reason"]
+        # Example: Write trigger file to S3 datamart
+        trigger_key = f"triggers/retrain_trigger_{MODEL_ALGORITHM}.json"
+        trigger_data = {
+            "snapshot_month": snapshot_month,
+            "decision": decision,
+            "reason": '; '.join(reason),
+            "triggered_at": datetime.utcnow().isoformat() + "Z"
+        }
+        
+        # Use datamart bucket for trigger files (operational data)
+        datamart_bucket = DATAMART_BASE_URI.replace("s3a://", "").replace("s3://", "").split("/")[0]
+        s3_client.put_object(
+            Bucket=datamart_bucket,
+            Key=trigger_key,
+            Body=json.dumps(trigger_data, indent=2),
+            ContentType='application/json'
         )
-        trigger_df.write.mode("overwrite").parquet(trigger_path)
-        print(f"✓ Trigger file written to: {trigger_path}")
+        print(f"✓ Trigger file written to: s3://{datamart_bucket}/{trigger_key}")
         print()
     
     elif retrain_needed and not AUTO_RETRAIN:
@@ -255,8 +336,6 @@ def make_governance_decision():
     print("=" * 80)
     print("Model Governance Complete")
     print("=" * 80)
-    
-    spark.stop()
     
     # Return decision for programmatic use
     return {

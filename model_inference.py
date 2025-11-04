@@ -319,8 +319,7 @@ def preprocess_and_predict(features_df, model, scaler, algorithm, snapshot_date)
 
 def save_predictions_to_s3(predictions_df, algorithm, snapshot_date):
     """
-    Save model predictions to S3 datamart
-    Following the notebook pattern: gold/model_predictions/{algorithm}/
+    Save model predictions to S3 datamart using pandas
     """
     print("\n" + "=" * 80)
     print("Saving Predictions to S3")
@@ -335,21 +334,39 @@ def save_predictions_to_s3(predictions_df, algorithm, snapshot_date):
     
     bucket = datamart_base.split("/")[2]
     
-    # Create predictions folder structure matching notebook
-    # Format: gold/model_predictions/{algorithm}/predictions_{snapshot_date}.parquet
-    snapshot_date_formatted = snapshot_date.replace('-', '_')
-    predictions_key = f"gold/model_predictions/{algorithm}/{algorithm}_predictions_{snapshot_date_formatted}.parquet"
+    # Verify snapshot_date column exists
+    print(f"  Columns to save: {list(predictions_df.columns)}")
+    if 'snapshot_date' not in predictions_df.columns:
+        print(f"  ⚠ Warning: snapshot_date column missing, adding it")
+        predictions_df['snapshot_date'] = snapshot_date
     
-    # Save to local temp file first
-    local_path = "/tmp/predictions.parquet"
-    predictions_df.to_parquet(local_path, index=False)
+    # Ensure snapshot_date is string format for consistency
+    predictions_df['snapshot_date'] = pd.to_datetime(predictions_df['snapshot_date']).dt.strftime('%Y-%m-%d')
     
-    # Upload to S3
-    print(f"Uploading to s3://{bucket}/{predictions_key}")
-    s3_client.upload_file(local_path, bucket, predictions_key)
+    print(f"  ✓ Verified snapshot_date column exists: {predictions_df['snapshot_date'].unique()}")
+    
+    # Create predictions folder structure
+    snapshot_date_formatted = snapshot_date.replace('-', '')
+    
+    # Save timestamped version
+    timestamped_key = f"gold/model_predictions/{algorithm}/{algorithm}_predictions_{snapshot_date_formatted}.parquet"
+    local_timestamped = "/tmp/predictions_timestamped.parquet"
+    predictions_df.to_parquet(local_timestamped, index=False)
+    
+    print(f"Uploading timestamped predictions: s3://{bucket}/{timestamped_key}")
+    s3_client.upload_file(local_timestamped, bucket, timestamped_key)
+    
+    # Save as latest (overwrites previous)
+    latest_key = f"gold/model_predictions/{algorithm}/latest_predictions.parquet"
+    local_latest = "/tmp/predictions_latest.parquet"
+    predictions_df.to_parquet(local_latest, index=False)
+    
+    print(f"Uploading latest predictions: s3://{bucket}/{latest_key}")
+    s3_client.upload_file(local_latest, bucket, latest_key)
     
     print(f"✓ Predictions saved successfully")
-    print(f"  Path: s3://{bucket}/{predictions_key}")
+    print(f"  Timestamped: s3://{bucket}/{timestamped_key}")
+    print(f"  Latest: s3://{bucket}/{latest_key}")
     
     # Save metadata
     metadata = {
@@ -358,7 +375,8 @@ def save_predictions_to_s3(predictions_df, algorithm, snapshot_date):
         'algorithm': algorithm,
         'num_predictions': len(predictions_df),
         'avg_probability': float(predictions_df['model_predictions'].mean()),
-        'predictions_path': f"s3://{bucket}/{predictions_key}"
+        'predictions_path': f"s3://{bucket}/{timestamped_key}",
+        'latest_path': f"s3://{bucket}/{latest_key}"
     }
     
     metadata_key = f"gold/model_predictions/{algorithm}/metadata_{snapshot_date_formatted}.json"
@@ -370,7 +388,7 @@ def save_predictions_to_s3(predictions_df, algorithm, snapshot_date):
     
     print(f"✓ Metadata saved: s3://{bucket}/{metadata_key}")
     
-    return f"s3://{bucket}/{predictions_key}"
+    return f"s3://{bucket}/{latest_key}"
 
 
 def main():
