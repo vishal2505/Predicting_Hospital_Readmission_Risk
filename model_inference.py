@@ -1,6 +1,7 @@
 """
 Model Inference Pipeline
-Loads best trained model and generates predictions for new data
+Loads trained model and generates predictions for a specific snapshot date
+Based on model_inference.ipynb notebook
 """
 
 import os
@@ -10,8 +11,6 @@ import pickle
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from sklearn.preprocessing import StandardScaler, FunctionTransformer
-from sklearn.pipeline import Pipeline
 
 
 def log1p_transform(x):
@@ -88,7 +87,8 @@ def get_best_model_info(config):
 
 def load_model_from_s3(algorithm, config):
     """
-    Load trained model and metadata from S3
+    Load trained model from S3
+    Note: Scaler is loaded separately from preprocessing artifacts
     """
     print("\n" + "=" * 80)
     print(f"Loading Model: {algorithm}")
@@ -128,9 +128,9 @@ def load_model_from_s3(algorithm, config):
     return model, metadata
 
 
-def load_preprocessed_scaler_from_s3():
+def load_scaler_from_s3():
     """
-    Load the fitted scaler from preprocessing step
+    Load the fitted scaler from preprocessing artifacts
     """
     print("\n" + "=" * 80)
     print("Loading Preprocessing Scaler")
@@ -181,16 +181,18 @@ def load_preprocessed_scaler_from_s3():
     return scaler
 
 
-def load_inference_data_from_s3(inference_date=None):
+def load_feature_store_for_snapshot(snapshot_date):
     """
-    Load feature data for inference from S3
+    Load feature store for a specific snapshot date from S3
     
     Args:
-        inference_date: Date string in format YYYY-MM-DD (optional)
-                       If None, loads most recent data
+        snapshot_date: Date string in format YYYY-MM-DD
+    
+    Returns:
+        DataFrame with features for the snapshot date
     """
     print("\n" + "=" * 80)
-    print("Loading Inference Data from S3")
+    print(f"Loading Feature Store for Snapshot Date: {snapshot_date}")
     print("=" * 80)
     
     s3_client = boto3.client('s3', region_name=os.environ.get("AWS_REGION", "ap-southeast-1"))
@@ -205,6 +207,13 @@ def load_inference_data_from_s3(inference_date=None):
     
     print(f"Loading from s3://{bucket}/{feature_prefix}")
     
+    # Convert snapshot_date to year and month for filtering
+    snapshot_dt = datetime.strptime(snapshot_date, "%Y-%m-%d")
+    target_year = snapshot_dt.year
+    target_month = snapshot_dt.month
+    
+    print(f"Filtering for Year: {target_year}, Month: {target_month}")
+    
     # List all partition folders
     response = s3_client.list_objects_v2(
         Bucket=bucket,
@@ -217,23 +226,10 @@ def load_inference_data_from_s3(inference_date=None):
     if not partitions:
         raise FileNotFoundError(f"No data found in s3://{bucket}/{feature_prefix}")
     
-    # Filter by inference_date if provided
-    if inference_date:
-        target_partition = f"{feature_prefix}partition_date={inference_date}/"
-        if target_partition not in partitions:
-            raise FileNotFoundError(f"No data found for date {inference_date}")
-        partitions_to_load = [target_partition]
-        print(f"Loading data for {inference_date}")
-    else:
-        # Load most recent partition
-        partitions_to_load = [sorted(partitions)[-1]]
-        partition_date = partitions_to_load[0].split("=")[-1].rstrip("/")
-        print(f"Loading most recent data: {partition_date}")
-    
-    # Download parquet files from partition(s)
+    # Download and filter parquet files
     all_data = []
     
-    for partition in partitions_to_load:
+    for partition in partitions:
         # List parquet files in partition
         response = s3_client.list_objects_v2(
             Bucket=bucket,
@@ -252,105 +248,79 @@ def load_inference_data_from_s3(inference_date=None):
             all_data.append(df)
     
     # Combine all data
-    inference_df = pd.concat(all_data, ignore_index=True)
+    feature_df = pd.concat(all_data, ignore_index=True)
     
-    print(f"✓ Loaded {len(inference_df)} records")
-    print(f"  Columns: {list(inference_df.columns)}")
+    # Convert snapshot_date to datetime if it's string
+    if 'snapshot_date' in feature_df.columns:
+        feature_df['snapshot_date'] = pd.to_datetime(feature_df['snapshot_date'])
     
-    return inference_df
+    # Filter for the specific snapshot date (year and month)
+    filtered_df = feature_df[
+        (feature_df['snapshot_date'].dt.year == target_year) &
+        (feature_df['snapshot_date'].dt.month == target_month)
+    ].copy()
+    
+    if len(filtered_df) == 0:
+        raise ValueError(f"No data found for snapshot date {snapshot_date} (year={target_year}, month={target_month})")
+    
+    print(f"✓ Loaded {len(filtered_df)} records for {snapshot_date}")
+    print(f"  Columns: {list(filtered_df.columns)}")
+    
+    return filtered_df
 
 
-def log1p_transform(x):
-    """Apply log1p transformation to handle skewed distributions"""
-    return np.log1p(x)
-
-
-def preprocess_inference_data(df, scaler, feature_cols):
+def preprocess_and_predict(features_df, model, scaler, algorithm, snapshot_date):
     """
-    Apply same preprocessing as training data
+    Preprocess features and generate predictions
     
     Args:
-        df: Raw feature DataFrame
-        scaler: Fitted StandardScaler from training
-        feature_cols: List of feature columns (from model metadata)
+        features_df: DataFrame with features
+        model: Trained model
+        scaler: Fitted StandardScaler from preprocessing
+        algorithm: Algorithm name
+        snapshot_date: Snapshot date string
     
     Returns:
-        X_processed: Preprocessed feature matrix
-        entity_ids: encounter_id for tracking predictions
+        DataFrame with predictions
     """
     print("\n" + "=" * 80)
-    print("Preprocessing Inference Data")
+    print("Preprocessing and Generating Predictions")
     print("=" * 80)
     
-    # Extract entity IDs for later
-    entity_ids = df['encounter_id'].values if 'encounter_id' in df.columns else None
+    # Extract feature columns (exclude ID and metadata columns)
+    feature_cols = [c for c in features_df.columns 
+                   if c not in ["encounter_id", "snapshot_date", "label", "partition_date"]]
     
-    # Select feature columns
-    X = df[feature_cols].copy()
+    print(f"Using {len(feature_cols)} features")
     
-    print(f"Features shape: {X.shape}")
-    print(f"Feature columns: {len(feature_cols)}")
+    # Prepare X_inference
+    X_inference = features_df[feature_cols].copy()
     
-    # Apply log1p transformation ONLY to the 3 columns that need it (same as training)
-    # These are the columns with skewed distributions
-    log_transform_cols = [
-        'age_midpoint',
-        'severity_x_visits', 
-        'medication_density'
-    ]
+    # Apply scaler transformation
+    X_inference_scaled = scaler.transform(X_inference)
     
-    # Only transform features that exist in the data
-    log_transform_cols_present = [f for f in log_transform_cols if f in X.columns]
+    print(f"✓ Applied standard scaler transformation")
+    print(f"  Shape: {X_inference_scaled.shape}")
     
-    if log_transform_cols_present:
-        print(f"Applying log1p to {len(log_transform_cols_present)} columns: {log_transform_cols_present}")
-        X[log_transform_cols_present] = np.log1p(X[log_transform_cols_present])
+    # Generate predictions
+    y_pred_proba = model.predict_proba(X_inference_scaled)[:, 1]
     
-    # Apply scaling (using fitted scaler from training)
-    # The scaler was fitted with log1p already applied, so we apply it first
-    X_scaled = scaler.transform(X)
-    
-    print("✓ Preprocessing complete")
-    
-    return X_scaled, entity_ids
-
-
-def generate_predictions(model, X, entity_ids, algorithm):
-    """
-    Generate predictions using trained model
-    
-    Returns:
-        DataFrame with encounter_id and predictions
-    """
-    print("\n" + "=" * 80)
-    print("Generating Predictions")
-    print("=" * 80)
-    
-    # Get probability predictions (for binary classification)
-    y_pred_proba = model.predict_proba(X)[:, 1]
-    
-    # Get class predictions
-    y_pred = model.predict(X)
-    
-    print(f"✓ Generated {len(y_pred)} predictions")
-    print(f"  Positive rate: {y_pred.mean():.2%}")
+    print(f"✓ Generated {len(y_pred_proba)} predictions")
     print(f"  Average probability: {y_pred_proba.mean():.4f}")
     
-    # Create predictions DataFrame
-    predictions_df = pd.DataFrame({
-        'encounter_id': entity_ids,
-        'prediction_probability': y_pred_proba,
-        'prediction_class': y_pred,
-        'model_algorithm': algorithm,
-        'prediction_timestamp': datetime.now().isoformat()
-    })
+    # Prepare output DataFrame
+    predictions_df = features_df[["encounter_id", "snapshot_date"]].copy()
+    predictions_df["model_algorithm"] = algorithm
+    predictions_df["model_predictions"] = y_pred_proba
+    predictions_df["prediction_timestamp"] = datetime.now().isoformat()
     
     return predictions_df
 
 
-def save_predictions_to_s3(predictions_df, algorithm):
+def save_predictions_to_s3(predictions_df, algorithm, snapshot_date):
     """
-    Save predictions to S3 datamart
+    Save model predictions to S3 datamart
+    Following the notebook pattern: gold/model_predictions/{algorithm}/
     """
     print("\n" + "=" * 80)
     print("Saving Predictions to S3")
@@ -365,9 +335,10 @@ def save_predictions_to_s3(predictions_df, algorithm):
     
     bucket = datamart_base.split("/")[2]
     
-    # Create predictions folder structure
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    predictions_key = f"gold/model_predictions/{algorithm}/predictions_{timestamp}.parquet"
+    # Create predictions folder structure matching notebook
+    # Format: gold/model_predictions/{algorithm}/predictions_{snapshot_date}.parquet
+    snapshot_date_formatted = snapshot_date.replace('-', '_')
+    predictions_key = f"gold/model_predictions/{algorithm}/{algorithm}_predictions_{snapshot_date_formatted}.parquet"
     
     # Save to local temp file first
     local_path = "/tmp/predictions.parquet"
@@ -377,29 +348,20 @@ def save_predictions_to_s3(predictions_df, algorithm):
     print(f"Uploading to s3://{bucket}/{predictions_key}")
     s3_client.upload_file(local_path, bucket, predictions_key)
     
-    # Update latest pointer
-    latest_key = f"gold/model_predictions/{algorithm}/latest_predictions.parquet"
-    s3_client.copy_object(
-        Bucket=bucket,
-        CopySource={'Bucket': bucket, 'Key': predictions_key},
-        Key=latest_key
-    )
-    
     print(f"✓ Predictions saved successfully")
     print(f"  Path: s3://{bucket}/{predictions_key}")
-    print(f"  Latest: s3://{bucket}/{latest_key}")
     
     # Save metadata
     metadata = {
         'timestamp': datetime.now().isoformat(),
+        'snapshot_date': snapshot_date,
         'algorithm': algorithm,
         'num_predictions': len(predictions_df),
-        'positive_rate': float(predictions_df['prediction_class'].mean()),
-        'avg_probability': float(predictions_df['prediction_probability'].mean()),
+        'avg_probability': float(predictions_df['model_predictions'].mean()),
         'predictions_path': f"s3://{bucket}/{predictions_key}"
     }
     
-    metadata_key = f"gold/model_predictions/{algorithm}/metadata_{timestamp}.json"
+    metadata_key = f"gold/model_predictions/{algorithm}/metadata_{snapshot_date_formatted}.json"
     s3_client.put_object(
         Bucket=bucket,
         Key=metadata_key,
@@ -414,13 +376,25 @@ def save_predictions_to_s3(predictions_df, algorithm):
 def main():
     """
     Main inference pipeline
+    1. Get snapshot date
+    2. Load model and scaler
+    3. Load feature store for that snapshot date
+    4. Preprocess and predict
+    5. Save predictions
     """
     print("\n" + "=" * 80)
     print("DIABETES READMISSION MODEL INFERENCE PIPELINE")
     print("=" * 80)
     
-    # Get inference date from environment (optional)
-    inference_date = os.environ.get("INFERENCE_DATE")  # Format: YYYY-MM-DD
+    # Get snapshot date from environment variable
+    snapshot_date = os.environ.get("SNAPSHOT_DATE")
+    
+    if not snapshot_date:
+        # Default to a recent date if not provided
+        print("⚠ SNAPSHOT_DATE not provided, using default: 2008-03-01")
+        snapshot_date = "2008-03-01"
+    
+    print(f"\n📅 Snapshot Date: {snapshot_date}")
     
     # Load configuration
     config = load_config()
@@ -432,35 +406,31 @@ def main():
     model, metadata = load_model_from_s3(best_algorithm, config)
     
     # Load preprocessing scaler
-    scaler = load_preprocessed_scaler_from_s3()
+    scaler = load_scaler_from_s3()
     
-    # Load inference data
-    inference_df = load_inference_data_from_s3(inference_date)
+    # Load feature store for the snapshot date
+    features_df = load_feature_store_for_snapshot(snapshot_date)
     
-    # Get feature columns from model metadata
-    feature_cols = metadata.get('config', {}).get('feature_columns', [])
-    if not feature_cols:
-        # Fallback: exclude known non-feature columns
-        feature_cols = [c for c in inference_df.columns 
-                       if c not in ['encounter_id', 'snapshot_date', 'label', 'partition_date']]
-    
-    print(f"\nUsing {len(feature_cols)} features")
-    
-    # Preprocess data
-    X_processed, entity_ids = preprocess_inference_data(inference_df, scaler, feature_cols)
-    
-    # Generate predictions
-    predictions_df = generate_predictions(model, X_processed, entity_ids, best_algorithm)
+    # Preprocess and generate predictions
+    predictions_df = preprocess_and_predict(
+        features_df, 
+        model,
+        scaler,
+        best_algorithm,
+        snapshot_date
+    )
     
     # Save predictions to S3
-    predictions_path = save_predictions_to_s3(predictions_df, best_algorithm)
+    predictions_path = save_predictions_to_s3(predictions_df, best_algorithm, snapshot_date)
     
     print("\n" + "=" * 80)
     print("✓ Inference Pipeline Completed Successfully!")
     print("=" * 80)
     print(f"\n📊 Summary:")
+    print(f"   Snapshot Date: {snapshot_date}")
     print(f"   Model: {best_algorithm}")
     print(f"   Records processed: {len(predictions_df)}")
+    print(f"   Average prediction: {predictions_df['model_predictions'].mean():.4f}")
     print(f"   Predictions saved: {predictions_path}")
 
 

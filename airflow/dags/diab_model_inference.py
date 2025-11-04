@@ -1,6 +1,10 @@
 """
 Model Inference DAG
-Generates predictions using the best trained model
+Generates predictions using the best trained model for a specific snapshot date
+
+DAG Configuration:
+- Can pass snapshot_date via DAG run configuration: {"snapshot_date": "2008-03-01"}
+- If not provided, uses default snapshot date
 """
 
 import os
@@ -26,6 +30,9 @@ ECS_SUBNETS = os.environ.get("ECS_SUBNETS", "").split(",") if os.environ.get("EC
 ECS_SECURITY_GROUPS = os.environ.get("ECS_SECURITY_GROUPS", "").split(",") if os.environ.get("ECS_SECURITY_GROUPS") else []
 DATAMART_BASE_URI = os.environ.get("DATAMART_BASE_URI", "s3a://diab-readmit-123456-datamart/")
 MODEL_CONFIG_S3_PATH = os.environ.get("MODEL_CONFIG_S3_PATH", "s3://diab-readmit-123456-datamart/config/model_config.json")
+
+# Default snapshot date (can be overridden via DAG run configuration)
+DEFAULT_SNAPSHOT_DATE = os.environ.get("DEFAULT_SNAPSHOT_DATE", "2008-03-01")
 
 
 def check_trained_model_exists(**context):
@@ -120,11 +127,11 @@ def check_model_comparison_exists(**context):
 
 def check_inference_data_exists(**context):
     """
-    Check if feature data exists for inference
+    Check if feature store data exists for inference
     Returns True if data exists, False otherwise
     """
     print("=" * 80)
-    print("Checking Inference Data Availability")
+    print("Checking Feature Store Data")
     print("=" * 80)
     
     s3_client = boto3.client('s3', region_name=AWS_REGION)
@@ -133,7 +140,7 @@ def check_inference_data_exists(**context):
     datamart_uri = DATAMART_BASE_URI.replace("s3a://", "s3://")
     bucket = datamart_uri.split("/")[2]
     
-    # Check feature store
+    # Check for feature store data
     feature_prefix = "gold/feature_store/"
     print(f"Checking s3://{bucket}/{feature_prefix}")
     
@@ -156,6 +163,61 @@ def check_inference_data_exists(**context):
         
     except Exception as e:
         print(f"✗ Error checking feature data: {e}")
+        return False
+
+
+def check_preprocessing_artifacts_exist(**context):
+    """
+    Check if preprocessing artifacts (scaler) exist
+    Returns True if artifacts exist, False otherwise
+    """
+    print("=" * 80)
+    print("Checking Preprocessing Artifacts")
+    print("=" * 80)
+    
+    s3_client = boto3.client('s3', region_name=AWS_REGION)
+    
+    # Parse S3 URI
+    datamart_uri = DATAMART_BASE_URI.replace("s3a://", "s3://")
+    bucket = datamart_uri.split("/")[2]
+    
+    # Check for preprocessing artifacts
+    preprocessed_prefix = "gold/preprocessed/"
+    print(f"Checking s3://{bucket}/{preprocessed_prefix}")
+    
+    try:
+        # Check for latest.txt
+        latest_key = f"{preprocessed_prefix}latest.txt"
+        
+        try:
+            s3_client.head_object(Bucket=bucket, Key=latest_key)
+            print(f"✓ Found latest preprocessing pointer")
+            has_artifacts = True
+        except:
+            # Check for any preprocessing folder
+            response = s3_client.list_objects_v2(
+                Bucket=bucket,
+                Prefix=f"{preprocessed_prefix}train_data_",
+                Delimiter='/',
+                MaxKeys=1
+            )
+            has_artifacts = len(response.get('CommonPrefixes', [])) > 0
+            
+            if has_artifacts:
+                print(f"✓ Found preprocessing artifacts")
+            else:
+                print(f"✗ No preprocessing artifacts found")
+        
+        if has_artifacts:
+            print("  Proceeding with inference.")
+        else:
+            print("  Run the model training DAG first (diab_model_training)")
+            print("  Training DAG creates preprocessing artifacts")
+        
+        return has_artifacts
+        
+    except Exception as e:
+        print(f"✗ Error checking preprocessing artifacts: {e}")
         return False
 
 
@@ -251,9 +313,9 @@ check_comparison = ShortCircuitOperator(
     dag=dag,
 )
 
-# Task 3: Check if inference data exists
+# Task 3: Check if feature store data exists
 check_data = ShortCircuitOperator(
-    task_id='check_inference_data_exists',
+    task_id='check_feature_store_exists',
     python_callable=check_inference_data_exists,
     provide_context=True,
     dag=dag,
@@ -268,6 +330,7 @@ check_preprocessing = ShortCircuitOperator(
 )
 
 # Task 5: Run inference
+# Note: snapshot_date can be passed via DAG run config: {"snapshot_date": "2008-03-01"}
 run_inference = EcsRunTaskOperator(
     task_id='run_model_inference',
     dag=dag,
@@ -292,19 +355,18 @@ run_inference = EcsRunTaskOperator(
                     {'name': 'AWS_REGION', 'value': AWS_REGION},
                     {'name': 'DATAMART_BASE_URI', 'value': DATAMART_BASE_URI},
                     {'name': 'MODEL_CONFIG_S3_URI', 'value': MODEL_CONFIG_S3_PATH},
-                    # Optional: Set specific inference date
-                    # {'name': 'INFERENCE_DATE', 'value': '2008-12-01'},
+                    # Snapshot date - can be overridden via DAG conf
+                    {'name': 'SNAPSHOT_DATE', 'value': "{{ dag_run.conf.get('snapshot_date', '%s') }}" % DEFAULT_SNAPSHOT_DATE},
                 ],
             },
         ],
     },
     propagate_tags='TASK_DEFINITION',
     reattach=True,
-    execution_timeout=timedelta(minutes=30),  # Inference should be faster than training
+    execution_timeout=timedelta(minutes=30),
 )
 
 # Define task dependencies
-# All checks must pass before inference runs
 chain(
     check_model,
     check_comparison,
