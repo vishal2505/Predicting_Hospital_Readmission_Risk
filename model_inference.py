@@ -181,7 +181,7 @@ def load_scaler_from_s3():
     return scaler
 
 
-def load_feature_store_for_snapshot(snapshot_date):
+def load_feature_store_for_snapshot(snapshot_date, manual_upload=False):
     """
     Load feature store for a specific snapshot date from S3
     
@@ -203,8 +203,12 @@ def load_feature_store_for_snapshot(snapshot_date):
         datamart_base = datamart_base.replace("s3a://", "s3://")
     
     bucket = datamart_base.split("/")[2]
-    feature_prefix = "gold/feature_store/"
-    
+
+    if manual_upload:
+        feature_prefix = "gold/upload/"
+    else:
+        feature_prefix = "gold/feature_store/"
+
     print(f"Loading from s3://{bucket}/{feature_prefix}")
     
     # Convert snapshot_date to year and month for filtering
@@ -406,6 +410,7 @@ def main():
     
     # Get snapshot date from environment variable
     snapshot_date = os.environ.get("SNAPSHOT_DATE")
+    manual_upload = os.environ.get("MANUAL_UPLOAD", "false").lower() == "true"
     
     if not snapshot_date:
         # Default to a recent date if not provided
@@ -413,6 +418,7 @@ def main():
         snapshot_date = "2008-03-01"
     
     print(f"\n📅 Snapshot Date: {snapshot_date}")
+    print(f"\n Manual Upload: {manual_upload}")
     
     # Load configuration
     config = load_config()
@@ -427,7 +433,7 @@ def main():
     scaler = load_scaler_from_s3()
     
     # Load feature store for the snapshot date
-    features_df = load_feature_store_for_snapshot(snapshot_date)
+    features_df = load_feature_store_for_snapshot(snapshot_date, manual_upload)
     
     # Preprocess and generate predictions
     predictions_df = preprocess_and_predict(

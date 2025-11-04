@@ -33,6 +33,7 @@ MODEL_CONFIG_S3_PATH = os.environ.get("MODEL_CONFIG_S3_PATH", "s3://diab-readmit
 
 # Default snapshot date (can be overridden via DAG run configuration)
 DEFAULT_SNAPSHOT_DATE = os.environ.get("DEFAULT_SNAPSHOT_DATE", "2008-03-01")
+MANUAL_UPLOAD = os.environ.get("MANUAL_UPLOAD", "false")
 
 
 def check_trained_model_exists(**context):
@@ -357,6 +358,7 @@ run_inference = EcsRunTaskOperator(
                     {'name': 'MODEL_CONFIG_S3_URI', 'value': MODEL_CONFIG_S3_PATH},
                     # Snapshot date - can be overridden via DAG conf
                     {'name': 'SNAPSHOT_DATE', 'value': "{{ dag_run.conf.get('snapshot_date', '%s') }}" % DEFAULT_SNAPSHOT_DATE},
+                    {'name': 'MANUAL_UPLOAD', 'value': "{{ dag_run.conf.get('manual_upload', '%s') }}" % str(MANUAL_UPLOAD).lower()},
                 ],
             },
         ],
