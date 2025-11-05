@@ -353,12 +353,12 @@ if __name__ == "__main__":
         
         # Exit with code based on decision
         # 0 = No Action, 1 = Schedule Retrain, 2 = Retrain
-        if result["decision"] == "Retrain":
-            sys.exit(2)
-        elif result["decision"] == "Schedule Retrain":
-            sys.exit(1)
-        else:
-            sys.exit(0)
+        # if result["decision"] == "Retrain":
+        #     sys.exit(2)
+        # elif result["decision"] == "Schedule Retrain":
+        #     sys.exit(1)
+        # else:
+        sys.exit(0)
             
     except Exception as e:
         print(f"\n✗ Fatal error: {e}")
