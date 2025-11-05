@@ -221,7 +221,7 @@ run_governance = EcsRunTaskOperator(
                     {'name': 'AWS_REGION', 'value': AWS_REGION},
                     {'name': 'DATAMART_BASE_URI', 'value': DATAMART_BASE_URI},
                     # Model algorithm - can be overridden via DAG conf
-                    {'name': 'MODEL_ALGORITHM', 'value': "{{ dag_run.conf.get('model_algorithm', '%s') }}" % DEFAULT_MODEL_ALGORITHM},
+                    #{'name': 'MODEL_ALGORITHM', 'value': "{{ dag_run.conf.get('model_algorithm', '%s') }}" % DEFAULT_MODEL_ALGORITHM},
                     # Auto-retrain flag - can be set via DAG conf
                     {'name': 'AUTO_RETRAIN', 'value': "{{ dag_run.conf.get('auto_retrain', 'false') }}"},
                 ],
