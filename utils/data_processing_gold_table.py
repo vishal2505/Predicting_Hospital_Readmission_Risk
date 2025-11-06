@@ -25,7 +25,8 @@ def process_labels_gold_table(snapshot_date_str, silver_diabetes_monthly_directo
     # connect to silver table
     partition_name = f"silver_diabetes_monthly_{target_year}_{target_month:02d}" + '.parquet'
     filepath = silver_diabetes_monthly_directory + partition_name
-    df = spark.read.parquet(filepath)
+    # Read all part files under the silver monthly Parquet directory (works for local and S3)
+    df = spark.read.parquet(filepath + "/*")
     print('loaded from:', filepath, 'row count:', df.count())
 
     # get label
@@ -57,7 +58,8 @@ def process_features_gold_table(snapshot_date_str, silver_diabetes_monthly_direc
     # connect to silver table
     partition_name = f"silver_diabetes_monthly_{target_year}_{target_month:02d}" + '.parquet'
     filepath = silver_diabetes_monthly_directory + partition_name
-    df = spark.read.parquet(filepath)
+    # Read all part files under the silver monthly Parquet directory (works for local and S3)
+    df = spark.read.parquet(filepath + "/*")
     print('loaded from:', filepath, 'row count:', df.count())
 
      # --- 🔧 Feature Engineering: Race ---

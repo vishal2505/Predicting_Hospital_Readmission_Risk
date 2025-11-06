@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Install Java (OpenJDK 21 headless), procps (for 'ps') and bash
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends openjdk-21-jdk-headless procps bash && \
+    apt-get install -y --no-install-recommends openjdk-21-jdk-headless procps bash wget && \
     rm -rf /var/lib/apt/lists/* && \
     # Ensure Spark’s scripts run with bash instead of dash
     ln -sf /bin/bash /bin/sh && \
@@ -24,19 +24,24 @@ WORKDIR /app
 # Copy the requirements file into the container
 COPY requirements.txt ./
 
-# Install Python dependencies (ensure that pyspark is in your requirements.txt,
-# or you can install it explicitly by uncommenting the next line)
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
-# RUN pip install pyspark
 
-# Expose the default JupyterLab port
-EXPOSE 8888
+# Copy application code
+COPY *.py ./
+COPY utils/ ./utils/
+COPY data/ ./data/
+COPY conf/ ./conf/
 
-# Create a volume mount point for notebooks
-VOLUME /app
+# --- ADDITIONS FOR S3 CONNECTIVITY ---
+# Download the Hadoop-AWS and AWS SDK bundle JARs for S3a support.
+RUN wget -O /tmp/hadoop-aws-3.3.4.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    wget -O /tmp/aws-java-sdk-bundle-1.12.639.jar https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.639/aws-java-sdk-bundle-1.12.639.jar && \
+    mkdir -p /opt/spark/jars-extra && \
+    mv /tmp/hadoop-aws-3.3.4.jar /opt/spark/jars-extra/ && \
+    mv /tmp/aws-java-sdk-bundle-1.12.639.jar /opt/spark/jars-extra/
+# --- END ADDITIONS ---
 
-# Enable JupyterLab via environment variable
-ENV JUPYTER_ENABLE_LAB=yes
-
-# Set up the command to run JupyterLab
-CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--notebook-dir=/app"]
+# Default command - runs the main pipeline script
+# Can be overridden in ECS task definition or docker run
+CMD ["python", "main.py"]

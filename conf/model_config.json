@@ -1,0 +1,56 @@
+{
+  "temporal_window_mode": "absolute",
+  "temporal_splits": {
+    "train": {
+      "start_date": "1999-01-01",
+      "end_date": "2005-12-31",
+      "description": "Training window: 7 years of historical data for model fitting"
+    },
+    "test": {
+      "start_date": "2006-01-01",
+      "end_date": "2007-12-31",
+      "description": "Test window: 2 years for hyperparameter tuning and performance evaluation"
+    },
+    "oot": {
+      "start_date": "2008-01-01",
+      "end_date": "2008-12-31",
+      "description": "Out-of-Time window: 1 year holdout for final model validation and inference"
+    }
+  },
+  "model_config": {
+    "feature_store_path": "gold/feature_store/",
+    "label_store_path": "gold/label_store/",
+    "model_registry_bucket": "diab-readmit-123456-model-registry",
+    "model_registry_prefix": "models/",
+    "experiment_name": "diabetes_readmission_prediction",
+    "random_state": 42,
+    "test_size": 0.2,
+    "cv_folds": 5
+  },
+  "training_config": {
+    "algorithms": ["logistic_regression", "random_forest", "xgboost"],
+    "enabled_algorithms": {
+      "logistic_regression": true,
+      "random_forest": true,
+      "xgboost": true
+    },
+    "hyperparameter_tuning": true,
+    "feature_selection": true,
+    "feature_importance_threshold": 0.01,
+    "class_weight": "balanced"
+  },
+  "inference_config": {
+    "batch_size": 10000,
+    "prediction_threshold": 0.5,
+    "output_format": "parquet"
+  },
+  "monitoring_config": {
+    "track_drift": true,
+    "drift_threshold": 0.1,
+    "performance_metrics": ["accuracy", "precision", "recall", "f1", "auc_roc"],
+    "minimum_performance_threshold": {
+      "accuracy": 0.65,
+      "auc_roc": 0.70
+    }
+  }
+}
