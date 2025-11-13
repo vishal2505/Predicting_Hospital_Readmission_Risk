@@ -30,8 +30,8 @@ This project implements a production-ready MLOps pipeline that:
 **4 Airflow DAGs:**
 1. **Data Processing** (`diab_medallion_ecs`) - ETL pipeline
 2. **Model Training** (`diab_model_training`) - Train & validate models
-3. **Model Inference** (`diab_model_inference`) - Batch predictions *(coming soon)*
-4. **Model Monitoring** (`diab_model_monitoring`) - Performance tracking *(coming soon)*
+3. **Model Inference** (`diab_model_inference`) - Batch predictions 
+4. **Model Monitoring** (`diab_model_monitoring`) - Performance tracking 
 
 ## 🚀 Quick Start
 
@@ -198,6 +198,26 @@ http://<EC2_PUBLIC_IP>:8080
   }
 }
 ```
+
+#### **Airflow UI**
+
+![AIFLOW UI](images/image.png)
+
+#### DAG 1: Data Processing Pipeline
+
+![DAG 1: Data Processing Pipeline](images/image-1.png)
+
+#### DAG 2: Model Training
+
+![DAG 2: Model Training](images/image-2.png)
+
+#### DAG 3: Model Inference
+
+![DAG 3: Model Inference](images/image-3.png)
+
+#### DAG 4: Model Monitoring and Governance
+
+![DAG 4: Model Monitoring and Governance](images/image-4.png)
 
 **Airflow Environment** (`airflow/airflow.env`):
 - AWS region and credentials

@@ -207,8 +207,6 @@ marimo/_lsp/
 __marimo__/
 .Trash-0
 datamart/
-data/
-*.csv
 .prompt/
 .terraform/
 .terraform.lock.hcl
