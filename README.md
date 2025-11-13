@@ -227,6 +227,10 @@ http://<EC2_PUBLIC_IP>:8080
   - `ECS_MODEL_TRAINING_TASK_DEF` - Model training (2vCPU/4GB)
 - S3 bucket paths
 
+## Prediction UI Video
+
+https://www.loom.com/share/506f460aafc54093ab6859ef1d574f3d
+
 ## 🐛 Troubleshooting
 
 **Common Issues:**
